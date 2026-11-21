@@ -90,6 +90,7 @@ void userAppInit(void) {
     setvbuf(stderr, nullptr, _IONBF, 0);
 
     sRomfsMounted = R_SUCCEEDED(romfsInit());
+    Ship::Switch::InstallCrashHandler();
 
     // Get told about HOME/sleep (to pause audio) while still being suspended
     // by the system as usual; allow the Capture button to take screenshots.

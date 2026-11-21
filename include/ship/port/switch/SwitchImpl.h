@@ -17,6 +17,9 @@
 namespace Ship {
 namespace Switch {
 
+// Links in the crash reporter (SwitchCrash.cpp) and records the code region.
+void InstallCrashHandler();
+
 // Read-only files packed into the NRO.
 inline constexpr const char* kRomfsPath = "romfs:";
 // User data on the SD card: config, saves, mods, logs, generated archives.
