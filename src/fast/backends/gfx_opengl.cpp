@@ -24,6 +24,14 @@
 #include <cstdio>
 #include <set>
 #include <sys/stat.h>
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <EGL/egl.h>
+#include "ship/Context.h"
+#include "ship/config/ConsoleVariable.h"
 #include "ship/port/switch/SwitchImpl.h"
 
 // Mesa/nouveau compiles every shader variant on first use, which shows up as
@@ -214,6 +222,281 @@ static void Remember(uint64_t id0, uint64_t id1) {
 }
 
 } // namespace SwitchShaderCache
+
+// Background shader compilation.
+//
+// A worker thread owns a second EGL context in the same share group (no
+// surface) and compiles + links programs the game asks for but has not seen
+// before. Until a program is ready the triangles that need it are skipped
+// (the object shows up a few frames late) instead of stalling the frame.
+// The main thread finishes the program (attribute/uniform lookups) once the
+// worker is done. Known shaders are still built up front by the prewarm.
+namespace SwitchAsyncShaders {
+
+using Key = std::pair<uint64_t, uint64_t>;
+
+struct Job {
+    Key key;
+    std::string vs;
+    std::string fs;
+};
+
+static EGLDisplay sDisplay = EGL_NO_DISPLAY;
+static EGLContext sContext = EGL_NO_CONTEXT;
+static std::thread sThread;
+static std::mutex sMutex;
+static std::condition_variable sWake;
+static std::deque<Job> sJobs;
+static std::map<Key, GLuint> sReady;  // linked programs, waiting for the main thread
+static std::set<Key> sPending;        // submitted, not finished
+static std::set<Key> sFailed;         // compile/link failed on the worker: redo synchronously
+static bool sRunning = false;
+static bool sWorkerOk = false;
+static bool sInPrewarm = false;
+
+static GLuint CompileProgram(const std::string& vs, const std::string& fs) {
+    const GLchar* sources[2] = { vs.data(), fs.data() };
+    const GLint lengths[2] = { (GLint)vs.size(), (GLint)fs.size() };
+    GLint ok = GL_FALSE;
+    GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertex, 1, &sources[0], &lengths[0]);
+    glCompileShader(vertex);
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        glDeleteShader(vertex);
+        return 0;
+    }
+    GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragment, 1, &sources[1], &lengths[1]);
+    glCompileShader(fragment);
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    glDetachShader(program, vertex);
+    glDetachShader(program, fragment);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    if (!ok) {
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+static void WorkerMain() {
+    // Core 2, below the main thread: never competes with the game loop on core 0.
+    Ship::Switch::PinCurrentThread(2, 0x30);
+    eglBindAPI(EGL_OPENGL_ES_API);
+    const bool current = eglMakeCurrent(sDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, sContext) == EGL_TRUE;
+    {
+        std::lock_guard<std::mutex> lock(sMutex);
+        sWorkerOk = current;
+    }
+    sWake.notify_all();
+    if (!current) {
+        return;
+    }
+    while (true) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lock(sMutex);
+            sWake.wait(lock, [] { return !sRunning || !sJobs.empty(); });
+            if (!sRunning) {
+                break;
+            }
+            job = std::move(sJobs.front());
+            sJobs.pop_front();
+        }
+        const auto start = std::chrono::steady_clock::now();
+        const GLuint program = CompileProgram(job.vs, job.fs);
+        // The program is used from the other context: make sure it is complete.
+        glFinish();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        {
+            std::lock_guard<std::mutex> lock(sMutex);
+            sPending.erase(job.key);
+            if (program != 0) {
+                sReady[job.key] = program;
+            } else {
+                sFailed.insert(job.key);
+            }
+        }
+        Ship::Switch::Diag("async shader %s in %.1f ms on the worker (%016llx/%016llx)",
+                           program != 0 ? "built" : "FAILED", ms, (unsigned long long)job.key.first,
+                           (unsigned long long)job.key.second);
+    }
+    eglMakeCurrent(sDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+}
+
+static void Stop() {
+    {
+        std::lock_guard<std::mutex> lock(sMutex);
+        if (!sRunning) {
+            return;
+        }
+        sRunning = false;
+    }
+    sWake.notify_all();
+    if (sThread.joinable()) {
+        sThread.join();
+    }
+    if (sContext != EGL_NO_CONTEXT) {
+        eglDestroyContext(sDisplay, sContext);
+        sContext = EGL_NO_CONTEXT;
+    }
+}
+
+// Called on the main thread with the renderer's context current.
+static void Start() {
+    sDisplay = eglGetCurrentDisplay();
+    const EGLContext mainContext = eglGetCurrentContext();
+    if (sDisplay == EGL_NO_DISPLAY || mainContext == EGL_NO_CONTEXT) {
+        Ship::Switch::Diag("async shaders: no current EGL context, disabled");
+        return;
+    }
+    EGLint configId = 0;
+    eglQueryContext(sDisplay, mainContext, EGL_CONFIG_ID, &configId);
+    const EGLint configAttribs[] = { EGL_CONFIG_ID, configId, EGL_NONE };
+    EGLConfig config;
+    EGLint count = 0;
+    if (!eglChooseConfig(sDisplay, configAttribs, &config, 1, &count) || count < 1) {
+        Ship::Switch::Diag("async shaders: config lookup failed, disabled");
+        return;
+    }
+    const EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    sContext = eglCreateContext(sDisplay, config, mainContext, contextAttribs);
+    if (sContext == EGL_NO_CONTEXT) {
+        Ship::Switch::Diag("async shaders: shared context creation failed (0x%x), disabled", eglGetError());
+        return;
+    }
+    sRunning = true;
+    sThread = std::thread(WorkerMain);
+    {
+        std::unique_lock<std::mutex> lock(sMutex);
+        sWake.wait_for(lock, std::chrono::seconds(2), [] { return sWorkerOk || !sThread.joinable(); });
+    }
+    if (!sWorkerOk) {
+        Ship::Switch::Diag("async shaders: worker could not make its context current, disabled");
+        Stop();
+        return;
+    }
+    atexit(Stop);
+    Ship::Switch::Diag("async shaders: worker running");
+}
+
+static bool Active() {
+    if (!sWorkerOk || !sRunning || sInPrewarm) {
+        return false;
+    }
+    return Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
+               CVAR_PREFIX_SETTING ".Switch.AsyncShaders", 1) != 0;
+}
+
+enum class State { None, Pending, Ready, Failed };
+
+static State Poll(const Key& key, GLuint* program) {
+    std::lock_guard<std::mutex> lock(sMutex);
+    auto it = sReady.find(key);
+    if (it != sReady.end()) {
+        *program = it->second;
+        sReady.erase(it);
+        return State::Ready;
+    }
+    if (sFailed.erase(key) != 0) {
+        return State::Failed;
+    }
+    return sPending.count(key) != 0 ? State::Pending : State::None;
+}
+
+static void Submit(const Key& key, std::string vs, std::string fs) {
+    {
+        std::lock_guard<std::mutex> lock(sMutex);
+        sPending.insert(key);
+        sJobs.push_back({ key, std::move(vs), std::move(fs) });
+    }
+    sWake.notify_one();
+}
+
+} // namespace SwitchAsyncShaders
+
+// Loading screen for the startup prewarm: a progress bar drawn with scissored
+// clears straight into the window, between shader builds. No shaders or
+// textures involved, and the GL state it touches is restored afterwards.
+namespace SwitchLoadingScreen {
+
+static std::chrono::steady_clock::time_point sLastDraw;
+
+static void Draw(float progress, bool force) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - sLastDraw < std::chrono::milliseconds(50)) {
+        return;
+    }
+    sLastDraw = now;
+    SDL_Window* window = SDL_GL_GetCurrentWindow();
+    if (window == nullptr) {
+        return;
+    }
+    int width = 0;
+    int height = 0;
+    SDL_GL_GetDrawableSize(window, &width, &height);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    GLint framebuffer = 0;
+    GLint viewport[4];
+    GLint scissor[4];
+    GLfloat clearColor[4];
+    const GLboolean scissorOn = glIsEnabled(GL_SCISSOR_TEST);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, scissor);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clearColor);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.11f, 0.12f, 0.17f, 1.0f); // deep night blue
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glEnable(GL_SCISSOR_TEST);
+    const int barWidth = width / 2;
+    const int barHeight = std::max(6, height / 90);
+    const int barX = (width - barWidth) / 2;
+    const int barY = height / 4; // GL origin is bottom-left: lower quarter of the screen
+    const int border = std::max(2, barHeight / 4);
+    auto fill = [](int x, int y, int w, int h, float r, float gc, float b) {
+        glScissor(x, y, w, h);
+        glClearColor(r, gc, b, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    };
+    fill(barX - border, barY - border, barWidth + 2 * border, barHeight + 2 * border, 0.93f, 0.89f, 0.80f);
+    fill(barX, barY, barWidth, barHeight, 0.20f, 0.22f, 0.30f);
+    const int done = (int)(barWidth * std::min(std::max(progress, 0.0f), 1.0f));
+    if (done > 0) {
+        fill(barX, barY, done, barHeight, 0.96f, 0.62f, 0.25f); // warm orange
+    }
+
+    SDL_GL_SwapWindow(window);
+
+    glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+    if (!scissorOn) {
+        glDisable(GL_SCISSOR_TEST);
+    }
+    glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+}
+
+} // namespace SwitchLoadingScreen
 #endif
 #include "ship/window/gui/Gui.h"
 #include <prism/processor.h>
@@ -725,28 +1008,29 @@ void GfxRenderingAPIOGL::ClearShaderCache() {
 ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {
 #ifdef __SWITCH__
     SwitchShaderCache::Init();
-    // First shader of the session: build every variant seen in earlier runs
-    // now, so they never compile mid-game. Mostly cache loads after run one.
-    static bool sPrewarmDone = false;
-    if (!sPrewarmDone) {
-        sPrewarmDone = true;
-        const auto known = SwitchShaderCache::sKnownIds;
-        if (!known.empty()) {
-            Ship::Switch::ScopedCpuBoost boost;
-            const auto prewarmStart = std::chrono::steady_clock::now();
-            int built = 0;
-            for (const auto& [id0, id1] : known) {
-                if ((id0 != shader_id0 || id1 != shader_id1) && LookupShader(id0, id1) == nullptr) {
-                    CreateAndLoadNewShader(id0, id1);
-                    built++;
-                }
+    const auto compileStart = std::chrono::steady_clock::now();
+
+    // A variant nobody has seen yet: compile it on the worker and skip the
+    // triangles that need it until it is ready (see SwitchAsyncShaders).
+    GLuint asyncProgram = 0;
+    if (SwitchAsyncShaders::Active()) {
+        const SwitchAsyncShaders::Key key(shader_id0, shader_id1);
+        switch (SwitchAsyncShaders::Poll(key, &asyncProgram)) {
+            case SwitchAsyncShaders::State::None: {
+                CCFeatures features;
+                gfx_cc_get_features(shader_id0, shader_id1, &features);
+                std::string fs = BuildFsShader(features);
+                std::string vs = BuildVsShader(features);
+                SwitchAsyncShaders::Submit(key, std::move(vs), std::move(fs));
+                return nullptr;
             }
-            Ship::Switch::Diag(
-                "prewarmed %d shaders in %.1f ms", built,
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prewarmStart).count());
+            case SwitchAsyncShaders::State::Pending:
+                return nullptr;
+            case SwitchAsyncShaders::State::Ready:
+            case SwitchAsyncShaders::State::Failed: // asyncProgram stays 0: compile here
+                break;
         }
     }
-    const auto compileStart = std::chrono::steady_clock::now();
 #endif
     CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
@@ -757,9 +1041,9 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
     GLint success;
 
 #ifdef __SWITCH__
-    GLuint shader_program = glCreateProgram();
+    GLuint shader_program = asyncProgram != 0 ? asyncProgram : glCreateProgram();
     const uint64_t sourceHash = SwitchShaderCache::HashSources(vs_buf, fs_buf);
-    const bool fromCache = SwitchShaderCache::Load(shader_program, sourceHash);
+    const bool fromCache = asyncProgram != 0 || SwitchShaderCache::Load(shader_program, sourceHash);
     if (!fromCache) {
 #endif
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -928,8 +1212,8 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         const double ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
         Ship::Switch::Diag("shader #%d %s in %.1f ms (%016llx/%016llx)", ++sShaderCount,
-                           fromCache ? "loaded from cache" : "compiled", ms, (unsigned long long)shader_id0,
-                           (unsigned long long)shader_id1);
+                           asyncProgram != 0 ? "finished (async)" : (fromCache ? "loaded from cache" : "compiled"),
+                           ms, (unsigned long long)shader_id0, (unsigned long long)shader_id1);
     }
 #endif
     return prg;
@@ -1247,6 +1531,10 @@ void GfxRenderingAPIOGL::Init() {
     mPixelDepthRbSize = 1;
 
     glGetIntegerv(GL_MAX_SAMPLES, &mMaxMsaaLevel);
+
+#ifdef __SWITCH__
+    SwitchAsyncShaders::Start();
+#endif
 }
 
 void GfxRenderingAPIOGL::OnResize() {
@@ -1254,6 +1542,41 @@ void GfxRenderingAPIOGL::OnResize() {
 
 void GfxRenderingAPIOGL::StartFrame() {
     mFrameCount++;
+#ifdef __SWITCH__
+    // First frame: build every shader variant seen in earlier sessions (plus
+    // the shipped starter list) behind a loading screen, before anything is
+    // drawn, so known variants never compile during play.
+    static bool sPrewarmDone = false;
+    if (!sPrewarmDone) {
+        sPrewarmDone = true;
+        SwitchShaderCache::Init();
+        std::vector<std::pair<uint64_t, uint64_t>> todo;
+        for (const auto& ids : SwitchShaderCache::sKnownIds) {
+            if (LookupShader(ids.first, ids.second) == nullptr) {
+                todo.push_back(ids);
+            }
+        }
+        if (!todo.empty()) {
+            Ship::Switch::ScopedCpuBoost boost;
+            SwitchAsyncShaders::sInPrewarm = true;
+            const auto prewarmStart = std::chrono::steady_clock::now();
+            SwitchLoadingScreen::Draw(0.0f, true);
+            for (size_t i = 0; i < todo.size(); i++) {
+                CreateAndLoadNewShader(todo[i].first, todo[i].second);
+                SwitchLoadingScreen::Draw((float)(i + 1) / (float)todo.size(), i + 1 == todo.size());
+            }
+            // Leave no program bound from the prewarm; the frame binds its own.
+            if (mLastLoadedShader != nullptr) {
+                UnloadShader(mLastLoadedShader);
+            }
+            mCurrentShaderProgram = nullptr;
+            SwitchAsyncShaders::sInPrewarm = false;
+            Ship::Switch::Diag(
+                "prewarmed %zu shaders in %.1f ms", todo.size(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prewarmStart).count());
+        }
+    }
+#endif
 }
 
 void GfxRenderingAPIOGL::EndFrame() {

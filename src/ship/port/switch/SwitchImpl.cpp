@@ -160,6 +160,12 @@ bool IsNxlinkConnected() {
     return sNxlinkSocket >= 0;
 }
 
+void PinCurrentThread(int core, int priority) {
+    const Handle self = threadGetCurHandle();
+    svcSetThreadCoreMask(self, core, 1U << core);
+    svcSetThreadPriority(self, priority);
+}
+
 bool IsAppletMode() {
     const AppletType type = appletGetAppletType();
     return type != AppletType_Application && type != AppletType_SystemApplication;

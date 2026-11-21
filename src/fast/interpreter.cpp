@@ -323,6 +323,14 @@ ShaderProgram* Interpreter::LookupOrCreateShaderProgram(uint64_t id0, uint64_t i
     if (prg == nullptr) {
         mRapi->UnloadShader(mRenderingState.mShaderProgram);
         prg = mRapi->CreateAndLoadNewShader(id0, id1);
+        if (prg == nullptr) {
+            // Still compiling in the background (Switch): keep the current
+            // program bound and let the caller skip this draw.
+            if (mRenderingState.mShaderProgram != nullptr) {
+                mRapi->LoadShader(mRenderingState.mShaderProgram);
+            }
+            return nullptr;
+        }
         mRenderingState.mShaderProgram = prg;
     }
     return prg;
@@ -3971,8 +3979,11 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
 
     struct ShaderProgram* prg = comb->prg[tm];
     if (prg == NULL) {
-        comb->prg[tm] = prg =
-            LookupOrCreateShaderProgram(comb->shader_id0, comb->shader_id1 | tm * SHADER_OPT(TEXEL0_CLAMP_S));
+        prg = LookupOrCreateShaderProgram(comb->shader_id0, comb->shader_id1 | tm * SHADER_OPT(TEXEL0_CLAMP_S));
+        if (prg == NULL) {
+            return; // Shader still compiling in the background; draw it once ready.
+        }
+        comb->prg[tm] = prg;
     }
     if (prg != mRenderingState.mShaderProgram) {
         Flush();

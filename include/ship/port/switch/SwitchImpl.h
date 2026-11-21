@@ -65,6 +65,10 @@ void StopHaptic();
 // between Joy-Con pair and single sideways Joy-Con). Blocks until closed.
 void ShowControllerApplet();
 
+// Moves the calling thread to an application core (0-2) and sets its
+// priority (0x2C is the main thread's; higher numbers run less eagerly).
+void PinCurrentThread(int core, int priority);
+
 // Call once per presented frame. Every 5 s logs average FPS, the worst frame
 // and the number of hitches (frames over 50 ms) through Diag().
 void OnFrame();
