@@ -134,6 +134,51 @@ void Diag(const char* fmt, ...) {
     SPDLOG_INFO("[switch] {}", buf);
 }
 
+bool IsDocked() {
+    return appletGetOperationMode() == AppletOperationMode_Console;
+}
+
+void GetDisplaySize(int* width, int* height) {
+    if (IsDocked()) {
+        *width = 1920;
+        *height = 1080;
+    } else {
+        *width = 1280;
+        *height = 720;
+    }
+}
+
+void OnFrame() {
+    static u64 sWindowStart = 0;
+    static u64 sLastFrame = 0;
+    static u32 sFrames = 0;
+    static u32 sHitches = 0;
+    static u64 sWorstNs = 0;
+
+    const u64 now = armTicksToNs(armGetSystemTick());
+    if (sLastFrame != 0) {
+        const u64 frameNs = now - sLastFrame;
+        sWorstNs = frameNs > sWorstNs ? frameNs : sWorstNs;
+        if (frameNs > 50000000ULL) {
+            sHitches++;
+        }
+        sFrames++;
+    } else {
+        sWindowStart = now;
+    }
+    sLastFrame = now;
+
+    const u64 windowNs = now - sWindowStart;
+    if (windowNs >= 5000000000ULL && sFrames > 0) {
+        Diag("frames: %.1f fps avg, worst %.1f ms, %u hitches >50ms (%s)", sFrames * 1e9 / (double)windowNs,
+             sWorstNs / 1e6, (unsigned)sHitches, IsDocked() ? "docked" : "handheld");
+        sWindowStart = now;
+        sFrames = 0;
+        sHitches = 0;
+        sWorstNs = 0;
+    }
+}
+
 static std::atomic<int> sCpuBoostRefs { 0 };
 
 void SetCpuBoost(bool enable) {

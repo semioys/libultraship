@@ -15,6 +15,9 @@
 #include "ship/controller/controldeck/ControlDeck.h"
 #include "ship/window/FileDropMgr.h"
 #include "fast/backends/gfx_sdl.h"
+#ifdef __SWITCH__
+#include "ship/port/switch/SwitchImpl.h"
+#endif
 
 #ifdef __OpenBSD__
 #include <sys/sysctl.h>
@@ -417,7 +420,16 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
     char title[512];
     int len = snprintf(title, sizeof(title), "%s (%s)", gameName, gfxApiName);
 
-#if defined(__IOS__) || defined(__ANDROID__)
+#ifdef __SWITCH__
+    // The window is the whole screen: create it at the native size of the
+    // current mode (720p handheld / 1080p docked) instead of the saved desktop
+    // window size, which the compositor would otherwise upscale.
+    Ship::Switch::GetDisplaySize(&mWindowWidth, &mWindowHeight);
+    posX = 0;
+    posY = 0;
+#endif
+
+#if defined(__IOS__) || defined(__ANDROID__) || defined(__SWITCH__)
     Uint32 flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI;
 #else
     Uint32 flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
@@ -479,9 +491,11 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
         SDL_GL_GetDrawableSize(mWnd, &mWindowWidth, &mWindowHeight);
 #endif
 
+#ifndef __SWITCH__
         if (startFullScreen) {
             SetFullscreenImpl(true, false);
         }
+#endif
 
         mCtx = SDL_GL_CreateContext(mWnd);
 
@@ -623,6 +637,10 @@ void GfxWindowBackendSDL2::GetDimensions(uint32_t* width, uint32_t* height, int3
     // macOS and browsers: window geometry is logical points (CSS pixels on the web); the
     // pixel-density scale is applied where the internal render size is computed.
     SDL_GetWindowSize(mWnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
+#elif defined(__SWITCH__)
+    // Tracked from the operation mode in HandleEvents().
+    *width = mWindowWidth;
+    *height = mWindowHeight;
 #else
     SDL_GL_GetDrawableSize(mWnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
 #endif
@@ -777,6 +795,26 @@ void GfxWindowBackendSDL2::HandleEvents() {
     while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_CONTROLLERDEVICEREMOVED + 1, SDL_LASTEVENT) > 0) {
         HandleSingleEvent(event);
     }
+
+#ifdef __SWITCH__
+    Ship::Switch::OnFrame();
+
+    // Docking/undocking changes the output resolution. Follow it on the fly
+    // (resizes the native window buffer); the renderer picks the new size up
+    // from GetDimensions() on the next frame.
+    {
+        int displayWidth = 0;
+        int displayHeight = 0;
+        Ship::Switch::GetDisplaySize(&displayWidth, &displayHeight);
+        if (displayWidth != mWindowWidth || displayHeight != mWindowHeight) {
+            Ship::Switch::Diag("display mode -> %dx%d (%s)", displayWidth, displayHeight,
+                               Ship::Switch::IsDocked() ? "docked" : "handheld");
+            SDL_SetWindowSize(mWnd, displayWidth, displayHeight);
+            mWindowWidth = displayWidth;
+            mWindowHeight = displayHeight;
+        }
+    }
+#endif
 
     // resync fullscreen state
 #if defined(__APPLE__) && !defined(__IOS__)

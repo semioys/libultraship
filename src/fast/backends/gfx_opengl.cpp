@@ -19,6 +19,10 @@
 #endif
 
 #include "fast/backends/gfx_opengl.h"
+#ifdef __SWITCH__
+#include <chrono>
+#include "ship/port/switch/SwitchImpl.h"
+#endif
 #include "ship/window/gui/Gui.h"
 #include <prism/processor.h>
 #include <fstream>
@@ -527,6 +531,10 @@ void GfxRenderingAPIOGL::ClearShaderCache() {
 }
 
 ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {
+#ifdef __SWITCH__
+    // Shaders compile on first use; on Mesa/Tegra that is a visible hitch.
+    const auto compileStart = std::chrono::steady_clock::now();
+#endif
     CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
     const auto fs_buf = BuildFsShader(cc_features);
@@ -681,6 +689,15 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         glUniform1i(sampler_location, SHADER_PALETTE_TEXTURE);
     }
 
+#ifdef __SWITCH__
+    {
+        static int sShaderCount = 0;
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
+        Ship::Switch::Diag("shader #%d compiled in %.1f ms (%016llx/%016llx)", ++sShaderCount, ms,
+                           (unsigned long long)shader_id0, (unsigned long long)shader_id1);
+    }
+#endif
     return prg;
 }
 

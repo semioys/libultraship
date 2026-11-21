@@ -29,6 +29,17 @@ bool IsAddressInLoadedModule(uintptr_t addr);
 // True when stdout/stderr are redirected to an nxlink host on the PC.
 bool IsNxlinkConnected();
 
+// Native output size for the current operation mode: 1920x1080 docked,
+// 1280x720 handheld.
+void GetDisplaySize(int* width, int* height);
+
+// True while docked (AppletOperationMode_Console).
+bool IsDocked();
+
+// Call once per presented frame. Every 5 s logs average FPS, the worst frame
+// and the number of hitches (frames over 50 ms) through Diag().
+void OnFrame();
+
 // Stock CPU boost (appletSetCpuBoostMode FastLoad: CPU 1785 MHz, GPU at
 // minimum) for loading screens. Not an overclock. Calls nest; boost stays on
 // until the last one is released.

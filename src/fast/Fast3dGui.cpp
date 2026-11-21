@@ -56,7 +56,12 @@ void Fast3dGui::Init(GuiWindowInitData windowImpl) {
 }
 
 float Fast3dGui::ComputeDpiScale() {
-#if (!defined(__APPLE__) || defined(__IOS__)) && !defined(__EMSCRIPTEN__)
+#if defined(__SWITCH__)
+    // ImGui works in screen pixels on Switch, but menus are shown scaled up
+    // (handheld screen, TV across the room). Rasterize glyphs at 2x so the UI
+    // scale setting enlarges crisp glyphs instead of stretching a 13px atlas.
+    return 2.0f;
+#elif (!defined(__APPLE__) || defined(__IOS__)) && !defined(__EMSCRIPTEN__)
     // Only macOS and browsers separate logical points from physical pixels here; every
     // other platform (iOS included, which runs ImGui in pixel space) keeps a scale of 1.
     return 1.0f;
