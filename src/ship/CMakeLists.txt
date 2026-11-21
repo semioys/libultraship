@@ -101,6 +101,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
 elseif (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     set(Source_Files__Port
         ${CMAKE_CURRENT_SOURCE_DIR}/port/switch/SwitchImpl.cpp
+        # Software keyboard for ImGui text fields (SDL opens swkbd).
+        ${CMAKE_CURRENT_SOURCE_DIR}/port/mobile/MobileImpl.cpp
     )
 endif()
 

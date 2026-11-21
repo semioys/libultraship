@@ -1,4 +1,4 @@
-#if defined(__ANDROID__) || defined(__IOS__)
+#if defined(__ANDROID__) || defined(__IOS__) || defined(__SWITCH__)
 #include "ship/port/mobile/MobileImpl.h"
 #include <SDL2/SDL.h>
 
@@ -11,7 +11,9 @@ void Ship::Mobile::ImGuiProcessEvent(bool wantsTextInput) {
 
     if (wantsTextInput) {
         if (!isShowingVirtualKeyboard) {
-            state->ClearText();
+            if (state != nullptr) {
+                state->ClearText();
+            }
 
             isShowingVirtualKeyboard = true;
             SDL_StartTextInput();

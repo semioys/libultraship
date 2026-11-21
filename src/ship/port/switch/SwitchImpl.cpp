@@ -97,6 +97,9 @@ void userAppInit(void) {
     appletHook(&sAppletHookCookie, AppletHookCallback, nullptr);
     appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
 
+    // Handheld touchscreen drives the ImGui menu as a touch "mouse".
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+
     MakeDirectories(Ship::Switch::kAppDirectoryPath);
     // Relative paths (./mods, logs, ...) resolve against the app directory.
     chdir(Ship::Switch::kAppDirectoryPath);
