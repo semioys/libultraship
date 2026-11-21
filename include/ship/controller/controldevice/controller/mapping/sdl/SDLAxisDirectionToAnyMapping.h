@@ -41,6 +41,15 @@ class SDLAxisDirectionToAnyMapping : virtual public ControllerInputMapping {
      */
     bool AxisIsStick();
 
+    /** @brief The SDL gamepad axis this mapping reads. */
+    SDL_GameControllerAxis GetSDLControllerAxis() const {
+        return mControllerAxis;
+    }
+    /** @brief Which half of the axis (NEGATIVE or POSITIVE) triggers the mapping. */
+    AxisDirection GetSDLAxisDirection() const {
+        return mAxisDirection;
+    }
+
   protected:
     SDL_GameControllerAxis mControllerAxis;
     AxisDirection mAxisDirection;
