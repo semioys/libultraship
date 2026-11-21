@@ -396,8 +396,11 @@ static bool Active() {
     if (!sWorkerOk || !sRunning || sInPrewarm) {
         return false;
     }
+    // Off by default: on hardware, nouveau corrupted and then hung the GPU
+    // when programs were built on the second context while the main one was
+    // rendering, and the main-thread finish still cost 15-75 ms per shader.
     return Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
-               CVAR_PREFIX_SETTING ".Switch.AsyncShaders", 1) != 0;
+               CVAR_PREFIX_SETTING ".Switch.AsyncShaders", 0) != 0;
 }
 
 enum class State { None, Pending, Ready, Failed };
