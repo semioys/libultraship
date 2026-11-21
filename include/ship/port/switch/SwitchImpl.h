@@ -55,6 +55,16 @@ bool IsDocked();
 // Idempotent per controller GUID; call before a controller is opened.
 void ApplyNintendoButtonLayout();
 
+// HD Rumble: one pulse on every connected Switch controller (handheld,
+// Pro Controller, Joy-Con pair or single Joy-Con). Amplitudes 0..1, stopped
+// automatically after durationMs (checked in OnFrame()).
+void PlayHaptic(float ampLow, float freqLow, float ampHigh, float freqHigh, uint32_t durationMs);
+void StopHaptic();
+
+// Opens the system controller applet (pair / reorder controllers, switch
+// between Joy-Con pair and single sideways Joy-Con). Blocks until closed.
+void ShowControllerApplet();
+
 // Call once per presented frame. Every 5 s logs average FPS, the worst frame
 // and the number of hitches (frames over 50 ms) through Diag().
 void OnFrame();

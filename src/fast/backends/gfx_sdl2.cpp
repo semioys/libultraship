@@ -797,6 +797,25 @@ void GfxWindowBackendSDL2::HandleEvents() {
     }
 
 #ifdef __SWITCH__
+    // Per-mode internal render scale (Settings > Switch). Applied when the mode
+    // changes or the slider for the current mode moves, so the regular
+    // Internal Resolution slider still works in between.
+    {
+        static int sLastDocked = -1;
+        static float sLastScale = -1.0f;
+        const bool docked = Ship::Switch::IsDocked();
+        auto cvars = Ship::Context::GetRawInstance()->GetConsoleVariables();
+        const float scale = cvars->GetFloat(docked ? CVAR_PREFIX_SETTING ".Switch.DockedScale"
+                                                   : CVAR_PREFIX_SETTING ".Switch.HandheldScale",
+                                            1.0f);
+        if ((int)docked != sLastDocked || scale != sLastScale) {
+            sLastDocked = docked;
+            sLastScale = scale;
+            cvars->SetFloat(CVAR_INTERNAL_RESOLUTION, scale);
+            Ship::Switch::Diag("render scale %.0f%% (%s)", scale * 100.0f, docked ? "docked" : "handheld");
+        }
+    }
+
     // Docking/undocking changes the output resolution. Follow it on the fly
     // (resizes the native window buffer); the renderer picks the new size up
     // from GetDimensions() on the next frame.

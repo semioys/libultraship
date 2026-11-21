@@ -71,6 +71,25 @@ void ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings(
         return;
     }
 
+#ifdef __SWITCH__
+    // Switch defaults (Nintendo labels, see ApplyNintendoButtonLayout): R also on
+    // the R bumper, and the two C buttons used most in the field on the face
+    // buttons - X: C-Down, Y: C-Left. C buttons stay on the right stick too.
+    Ship::ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings({
+        { BTN_A, { SDL_CONTROLLER_BUTTON_A } },
+        { BTN_B, { SDL_CONTROLLER_BUTTON_B } },
+        { BTN_L, { SDL_CONTROLLER_BUTTON_LEFTSHOULDER } },
+        { BTN_R, { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER } },
+        { BTN_CDOWN, { SDL_CONTROLLER_BUTTON_X } },
+        { BTN_CLEFT, { SDL_CONTROLLER_BUTTON_Y } },
+        { BTN_START, { SDL_CONTROLLER_BUTTON_START } },
+        { BTN_DUP, { SDL_CONTROLLER_BUTTON_DPAD_UP } },
+        { BTN_DDOWN, { SDL_CONTROLLER_BUTTON_DPAD_DOWN } },
+        { BTN_DLEFT, { SDL_CONTROLLER_BUTTON_DPAD_LEFT } },
+        { BTN_DRIGHT, { SDL_CONTROLLER_BUTTON_DPAD_RIGHT } },
+    });
+    return;
+#endif
     Ship::ControllerDefaultMappings::SetDefaultSDLButtonToButtonMappings({
         { BTN_A, { SDL_CONTROLLER_BUTTON_A } },
         { BTN_B, { SDL_CONTROLLER_BUTTON_B } },

@@ -21,6 +21,7 @@
 namespace {
 
 int sNxlinkSocket = -1;
+u64 sHapticStopTick = 0; // armGetSystemTick() deadline for the current HD Rumble pulse.
 bool sRomfsMounted = false;
 bool sSocketsInitialized = false;
 
@@ -97,6 +98,9 @@ void userAppInit(void) {
     appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleepNotify);
     appletHook(&sAppletHookCookie, AppletHookCallback, nullptr);
     appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
+
+    // A single Joy-Con is held sideways (one-player "mini controller").
+    hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);
 
     // Handheld touchscreen drives the ImGui menu as a touch "mouse".
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
@@ -212,6 +216,10 @@ void OnFrame() {
     static u32 sHitches = 0;
     static u64 sWorstNs = 0;
 
+    if (sHapticStopTick != 0 && armGetSystemTick() >= sHapticStopTick) {
+        StopHaptic();
+    }
+
     const u64 now = armTicksToNs(armGetSystemTick());
     if (sLastFrame != 0) {
         const u64 frameNs = now - sLastFrame;
@@ -289,6 +297,72 @@ void ApplyNintendoButtonLayout() {
             Diag("Nintendo button layout applied to %s (%s)", guidStr, SDL_JoystickNameForIndex(i));
         }
     }
+}
+
+// ---- HD Rumble -------------------------------------------------------------
+namespace {
+struct VibrationTarget {
+    HidNpadIdType id;
+    HidNpadStyleTag style;
+    s32 count;
+    HidVibrationDeviceHandle handles[2];
+    bool ready;
+};
+
+VibrationTarget sVibrationTargets[] = {
+    { HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld, 2, {}, false },
+    { HidNpadIdType_No1, HidNpadStyleTag_NpadFullKey, 2, {}, false },
+    { HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual, 2, {}, false },
+    { HidNpadIdType_No1, HidNpadStyleTag_NpadJoyLeft, 1, {}, false },
+    { HidNpadIdType_No1, HidNpadStyleTag_NpadJoyRight, 1, {}, false },
+};
+bool sVibrationInitialized = false;
+
+void InitVibration() {
+    if (sVibrationInitialized) {
+        return;
+    }
+    sVibrationInitialized = true;
+    for (auto& target : sVibrationTargets) {
+        target.ready =
+            R_SUCCEEDED(hidInitializeVibrationDevices(target.handles, target.count, target.id, target.style));
+    }
+}
+
+void SendVibration(const HidVibrationValue& value) {
+    InitVibration();
+    HidVibrationValue values[2] = { value, value };
+    for (auto& target : sVibrationTargets) {
+        if (!target.ready || (hidGetNpadStyleSet(target.id) & target.style) == 0) {
+            continue;
+        }
+        hidSendVibrationValues(target.handles, values, target.count);
+    }
+}
+} // namespace
+
+void PlayHaptic(float ampLow, float freqLow, float ampHigh, float freqHigh, uint32_t durationMs) {
+    auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+    const HidVibrationValue value = { clamp01(ampLow), freqLow, clamp01(ampHigh), freqHigh };
+    SendVibration(value);
+    sHapticStopTick = armGetSystemTick() + armNsToTicks((u64)durationMs * 1000000ULL);
+}
+
+void StopHaptic() {
+    sHapticStopTick = 0;
+    const HidVibrationValue off = { 0.0f, 160.0f, 0.0f, 320.0f };
+    SendVibration(off);
+}
+
+void ShowControllerApplet() {
+    HidLaControllerSupportArg arg;
+    hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 1;
+    arg.hdr.enable_single_mode = 1; // Allows handheld, a Joy-Con pair, or one sideways Joy-Con.
+    HidLaControllerSupportResultInfo info;
+    const Result rc = hidLaShowControllerSupport(&info, &arg);
+    Diag("controller applet closed (rc=0x%x, players=%d)", rc, (int)info.player_count);
 }
 
 static std::atomic<int> sCpuBoostRefs { 0 };
