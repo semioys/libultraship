@@ -29,6 +29,27 @@ bool IsAddressInLoadedModule(uintptr_t addr);
 // True when stdout/stderr are redirected to an nxlink host on the PC.
 bool IsNxlinkConnected();
 
+// Stock CPU boost (appletSetCpuBoostMode FastLoad: CPU 1785 MHz, GPU at
+// minimum) for loading screens. Not an overclock. Calls nest; boost stays on
+// until the last one is released.
+void SetCpuBoost(bool enable);
+
+// Logs process memory usage (used / total) with a tag.
+void LogMemoryUsage(const char* tag);
+
+// RAII helper around SetCpuBoost.
+class ScopedCpuBoost {
+  public:
+    ScopedCpuBoost() {
+        SetCpuBoost(true);
+    }
+    ~ScopedCpuBoost() {
+        SetCpuBoost(false);
+    }
+    ScopedCpuBoost(const ScopedCpuBoost&) = delete;
+    ScopedCpuBoost& operator=(const ScopedCpuBoost&) = delete;
+};
+
 } // namespace Switch
 } // namespace Ship
 

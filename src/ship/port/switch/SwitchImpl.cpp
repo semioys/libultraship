@@ -2,6 +2,7 @@
 
 #include "ship/port/switch/SwitchImpl.h"
 
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <arpa/inet.h>
@@ -9,6 +10,8 @@
 #include <unistd.h>
 
 #include <switch.h>
+
+#include "spdlog/spdlog.h"
 
 namespace {
 
@@ -106,6 +109,33 @@ bool IsAddressInLoadedModule(uintptr_t addr) {
 
 bool IsNxlinkConnected() {
     return sNxlinkSocket >= 0;
+}
+
+static std::atomic<int> sCpuBoostRefs { 0 };
+
+void SetCpuBoost(bool enable) {
+    if (enable) {
+        if (sCpuBoostRefs.fetch_add(1) == 0) {
+            Result rc = appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
+            SPDLOG_INFO("[switch] CPU boost on (rc=0x{:x})", rc);
+        }
+    } else {
+        int prev = sCpuBoostRefs.fetch_sub(1);
+        if (prev == 1) {
+            Result rc = appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
+            SPDLOG_INFO("[switch] CPU boost off (rc=0x{:x})", rc);
+        } else if (prev <= 0) {
+            sCpuBoostRefs = 0;
+        }
+    }
+}
+
+void LogMemoryUsage(const char* tag) {
+    u64 total = 0;
+    u64 used = 0;
+    svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    SPDLOG_INFO("[switch] memory {}: used {} MiB / total {} MiB", tag, used >> 20, total >> 20);
 }
 
 } // namespace Switch
