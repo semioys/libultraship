@@ -47,6 +47,10 @@ void userAppInit(void) {
             sSocketsInitialized = false;
         }
     }
+    // A socket-backed stdout is fully buffered by default; a crash would eat
+    // the last lines, which are the ones we need.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
 
     sRomfsMounted = R_SUCCEEDED(romfsInit());
 

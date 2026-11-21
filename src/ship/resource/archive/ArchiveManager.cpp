@@ -230,6 +230,20 @@ const char* ArchiveManager::HashToCString(uint64_t hash) const {
     return hashStr != nullptr ? hashStr->c_str() : nullptr;
 }
 
+// std::filesystem::absolute() prefixes the working directory to anything it
+// does not consider absolute. newlib has no notion of root names, so devkitPro
+// device paths ("romfs:/x", "sdmc:/x") would become "sdmc:/cwd/romfs:/x".
+static std::string AbsoluteArchivePath(const std::filesystem::path& path) {
+#ifdef __SWITCH__
+    const std::string str = path.string();
+    const size_t colon = str.find(':');
+    if (colon != std::string::npos && colon < str.find('/')) {
+        return str;
+    }
+#endif
+    return std::filesystem::absolute(path).string();
+}
+
 std::vector<std::string> ArchiveManager::GetArchiveListInPaths(const std::vector<std::string>& archivePaths) {
     std::vector<std::string> fileList = {};
 
@@ -242,18 +256,18 @@ std::vector<std::string> ArchiveManager::GetArchiveListInPaths(const std::vector
                         StringHelper::IEquals(p.path().extension().string(), ".zip") ||
                         StringHelper::IEquals(p.path().extension().string(), ".mpq") ||
                         StringHelper::IEquals(p.path().extension().string(), ".o2r")) {
-                        fileList.push_back(std::filesystem::absolute(p).string());
+                        fileList.push_back(AbsoluteArchivePath(p.path()));
                         hasAssetFiles = true;
                     }
                 }
 
                 if (!hasAssetFiles) {
-                    fileList.push_back(std::filesystem::absolute(archivePath).string());
+                    fileList.push_back(AbsoluteArchivePath(archivePath));
                 }
             } else if (std::filesystem::is_regular_file(archivePath)) {
-                fileList.push_back(std::filesystem::absolute(archivePath).string());
+                fileList.push_back(AbsoluteArchivePath(archivePath));
             } else {
-                SPDLOG_WARN("The archive at path {} does not exist", std::filesystem::absolute(archivePath).string());
+                SPDLOG_WARN("The archive at path {} does not exist", AbsoluteArchivePath(archivePath));
             }
         } else {
             SPDLOG_WARN("No archive path supplied");

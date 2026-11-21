@@ -231,7 +231,27 @@ void Config::Save() {
             return;
         }
     }
+#ifdef __SWITCH__
+    // Horizon's rename() refuses to overwrite an existing file. Move the old
+    // config aside first so a failure never leaves us without one.
+    const fs::path backupPath = configPath.parent_path() / (configPath.filename().string() + ".bak");
+    bool hadBackup = false;
+    if (fs::exists(configPath, ec)) {
+        fs::remove(backupPath, ec);
+        fs::rename(configPath, backupPath, ec);
+        hadBackup = !ec;
+    }
     fs::rename(tempPath, configPath, ec);
+    if (ec && hadBackup) {
+        std::error_code restoreEc;
+        fs::rename(backupPath, configPath, restoreEc);
+    } else if (!ec && hadBackup) {
+        std::error_code removeEc;
+        fs::remove(backupPath, removeEc);
+    }
+#else
+    fs::rename(tempPath, configPath, ec);
+#endif
     if (ec) {
         SPDLOG_ERROR("Could not replace config \"{}\": {}", mPath, ec.message());
         std::error_code removeEc;

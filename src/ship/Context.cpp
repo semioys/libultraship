@@ -277,6 +277,8 @@ bool Context::InitControlDeck(std::shared_ptr<ControlDeck> controlDeck) {
     // Bring up the SDL game-controller subsystem here rather than in osContInit, so controllers work
     // in pre-game UI (e.g. navigating extraction prompts). osContInit still runs ControlDeck::Init(),
     // which needs the game's controllerBits.
+#ifndef __SWITCH__
+    // SDL's Switch backend maps Joy-Cons and the Pro Controller itself.
     std::string controllerDb = LocateFileAcrossAppDirs("gamecontrollerdb.txt");
     int mappingsAdded = SDL_GameControllerAddMappingsFromFile(controllerDb.c_str());
     if (mappingsAdded >= 0) {
@@ -284,6 +286,7 @@ bool Context::InitControlDeck(std::shared_ptr<ControlDeck> controlDeck) {
     } else {
         SPDLOG_WARN("Failed to add SDL game controller mappings from \"{}\" ({})", controllerDb, SDL_GetError());
     }
+#endif
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
         SPDLOG_WARN("Failed to initialize SDL game controllers ({})", SDL_GetError());
