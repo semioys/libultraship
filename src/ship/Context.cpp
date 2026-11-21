@@ -1,4 +1,7 @@
 #include "ship/Context.h"
+#ifdef __SWITCH__
+#include "ship/port/switch/SwitchImpl.h"
+#endif
 #include "ship/controller/controldevice/controller/mapping/keyboard/KeyboardScancodes.h"
 #include <cstring>
 #include <iostream>
@@ -474,6 +477,11 @@ std::string Context::GetShortName() const {
 }
 
 std::string Context::GetAppBundlePath() {
+#if defined(__SWITCH__)
+    // Read-only files shipped inside the NRO (config.yml, asset yamls, port archive).
+    return Switch::kRomfsPath;
+#endif
+
 #if defined(__ANDROID__)
     const char* externaldir = SDL_AndroidGetExternalStoragePath();
     if (externaldir != NULL) {
@@ -540,6 +548,11 @@ std::string Context::GetAppBundlePath() {
 }
 
 std::string Context::GetAppDirectoryPath(const std::string& appName) {
+#if defined(__SWITCH__)
+    // Config, saves, mods, logs and the user's generated asset archive.
+    return Switch::kAppDirectoryPath;
+#endif
+
 #if defined(__ANDROID__)
     const char* externaldir = SDL_AndroidGetExternalStoragePath();
     if (externaldir != NULL) {

@@ -7,7 +7,9 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <stdio.h>
-#ifndef _WIN32
+#if defined(__SWITCH__)
+#include "ship/port/switch/SwitchImpl.h"
+#elif !defined(_WIN32)
 #include <dlfcn.h>
 #endif
 
@@ -6488,6 +6490,9 @@ static bool IsValidResolvedAddress(uintptr_t addr) {
     // The Emscripten heap starts near address 0, so real pointers routinely live below
     // 0x0FFFFFFF and the range heuristic would drop valid textures.
     return true;
+#elif defined(__SWITCH__)
+    // No dynamic loader on Horizon: ask the kernel whether the page is module code/data.
+    return Ship::Switch::IsAddressInLoadedModule(addr);
 #elif defined(_WIN32)
     // For Windows, check whether the address belongs to a dll.
     HMODULE module = nullptr;
