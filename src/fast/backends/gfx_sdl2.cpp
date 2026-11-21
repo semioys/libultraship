@@ -797,8 +797,6 @@ void GfxWindowBackendSDL2::HandleEvents() {
     }
 
 #ifdef __SWITCH__
-    Ship::Switch::OnFrame();
-
     // Docking/undocking changes the output resolution. Follow it on the fly
     // (resizes the native window buffer); the renderer picks the new size up
     // from GetDimensions() on the next frame.
@@ -918,6 +916,10 @@ void GfxWindowBackendSDL2::SwapBuffersBegin() {
 
     SyncFramerateWithTime();
     SDL_GL_SwapWindow(mWnd);
+#ifdef __SWITCH__
+    // Once per presented frame (HandleEvents runs more often than that).
+    Ship::Switch::OnFrame();
+#endif
 }
 
 void GfxWindowBackendSDL2::SwapBuffersEnd() {

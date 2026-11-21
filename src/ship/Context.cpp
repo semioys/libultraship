@@ -220,6 +220,14 @@ bool Context::InitConsoleVariables() {
         return false;
     }
 
+#ifdef __SWITCH__
+    // No keyboard for F1: the menu toggle on Switch is the Minus button, which
+    // only works with controller navigation on. Default it on (a saved choice wins).
+    if (GetConsoleVariables()->Get(CVAR_IMGUI_CONTROLLER_NAV) == nullptr) {
+        GetConsoleVariables()->SetInteger(CVAR_IMGUI_CONTROLLER_NAV, 1);
+    }
+#endif
+
     return true;
 }
 
