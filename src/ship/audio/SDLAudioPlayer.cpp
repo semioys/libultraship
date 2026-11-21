@@ -1,5 +1,8 @@
 #include "ship/audio/SDLAudioPlayer.h"
 #include <spdlog/spdlog.h>
+#ifdef __SWITCH__
+#include "ship/port/switch/SwitchImpl.h"
+#endif
 
 namespace Ship {
 
@@ -54,6 +57,32 @@ int SDLAudioPlayer::Buffered() {
 }
 
 void SDLAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
+#ifdef __SWITCH__
+    // HOME menu / overlays: stop output instead of looping the last buffer.
+    // After sleep the audio renderer is gone, so reopen the device.
+    static uint32_t sSeenResumeCount = 0;
+    static bool sPaused = false;
+    const uint32_t resumeCount = Ship::Switch::GetResumeCount();
+    if (resumeCount != sSeenResumeCount) {
+        sSeenResumeCount = resumeCount;
+        DoClose();
+        const bool reopened = DoInit();
+        sPaused = false;
+        Ship::Switch::Diag("audio device reopened after sleep (%s)", reopened ? "ok" : "FAILED");
+    }
+    const bool focused = Ship::Switch::IsInFocus();
+    if (!focused && !sPaused && mDevice != 0) {
+        SDL_PauseAudioDevice(mDevice, 1);
+        SDL_ClearQueuedAudio(mDevice);
+        sPaused = true;
+    } else if (focused && sPaused && mDevice != 0) {
+        SDL_PauseAudioDevice(mDevice, 0);
+        sPaused = false;
+    }
+    if (sPaused || mDevice == 0) {
+        return;
+    }
+#endif
     if (Buffered() < 6000) {
         // Don't fill the audio buffer too much in case this happens
         SDL_QueueAudio(mDevice, buf, len);

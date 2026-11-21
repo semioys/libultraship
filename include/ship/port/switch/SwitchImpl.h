@@ -29,6 +29,16 @@ bool IsAddressInLoadedModule(uintptr_t addr);
 // True when stdout/stderr are redirected to an nxlink host on the PC.
 bool IsNxlinkConnected();
 
+// True when launched as a library applet (e.g. from the Album) instead of
+// title override: far less memory, the game may not fit.
+bool IsAppletMode();
+
+// Focus / sleep state from the applet hook (HOME menu, sleep, overlays).
+bool IsInFocus();
+// Incremented every time the console wakes from sleep; audio uses it to reopen
+// its device, which does not survive a sleep cycle.
+uint32_t GetResumeCount();
+
 // Native output size for the current operation mode: 1920x1080 docked,
 // 1280x720 handheld.
 void GetDisplaySize(int* width, int* height);

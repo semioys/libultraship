@@ -3,6 +3,7 @@
 #include "ship/port/switch/SwitchImpl.h"
 
 #include <atomic>
+#include <malloc.h>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
@@ -22,6 +23,35 @@ namespace {
 int sNxlinkSocket = -1;
 bool sRomfsMounted = false;
 bool sSocketsInitialized = false;
+
+AppletHookCookie sAppletHookCookie;
+std::atomic<bool> sInFocus { true };
+std::atomic<uint32_t> sResumeCount { 0 };
+
+// Runs from appletMainLoop(), which SDL calls while pumping events.
+void AppletHookCallback(AppletHookType hook, void* param) {
+    (void)param;
+    switch (hook) {
+        case AppletHookType_OnFocusState: {
+            const bool focused = appletGetFocusState() == AppletFocusState_InFocus;
+            sInFocus = focused;
+            Ship::Switch::Diag("focus %s", focused ? "gained" : "lost");
+            break;
+        }
+        case AppletHookType_OnResume:
+            sResumeCount++;
+            Ship::Switch::Diag("resumed from sleep");
+            break;
+        case AppletHookType_OnOperationMode:
+            Ship::Switch::Diag("operation mode -> %s", Ship::Switch::IsDocked() ? "docked" : "handheld");
+            break;
+        case AppletHookType_OnExitRequest:
+            Ship::Switch::Diag("exit requested by the system");
+            break;
+        default:
+            break;
+    }
+}
 
 // mkdir -p for sdmc: paths.
 void MakeDirectories(const char* path) {
@@ -61,6 +91,12 @@ void userAppInit(void) {
 
     sRomfsMounted = R_SUCCEEDED(romfsInit());
 
+    // Get told about HOME/sleep (to pause audio) while still being suspended
+    // by the system as usual; allow the Capture button to take screenshots.
+    appletSetFocusHandlingMode(AppletFocusHandlingMode_SuspendHomeSleepNotify);
+    appletHook(&sAppletHookCookie, AppletHookCallback, nullptr);
+    appletSetScreenShotPermission(AppletScreenShotPermission_Enable);
+
     MakeDirectories(Ship::Switch::kAppDirectoryPath);
     // Relative paths (./mods, logs, ...) resolve against the app directory.
     chdir(Ship::Switch::kAppDirectoryPath);
@@ -72,6 +108,7 @@ void userAppInit(void) {
 // Called by libnx after main() returns or exit() is called.
 void userAppExit(void) {
     Ship::Switch::Diag("PaperBoat exiting");
+    appletUnhook(&sAppletHookCookie);
     fflush(stdout);
     fflush(stderr);
 
@@ -113,6 +150,19 @@ bool IsAddressInLoadedModule(uintptr_t addr) {
 
 bool IsNxlinkConnected() {
     return sNxlinkSocket >= 0;
+}
+
+bool IsAppletMode() {
+    const AppletType type = appletGetAppletType();
+    return type != AppletType_Application && type != AppletType_SystemApplication;
+}
+
+bool IsInFocus() {
+    return sInFocus;
+}
+
+uint32_t GetResumeCount() {
+    return sResumeCount;
 }
 
 void Diag(const char* fmt, ...) {
@@ -257,11 +307,14 @@ void SetCpuBoost(bool enable) {
 }
 
 void LogMemoryUsage(const char* tag) {
+    // libnx hands (almost) all process memory to the heap up front, so the
+    // kernel's "used" figure is always ~total. mallinfo() shows what is
+    // actually allocated inside that heap.
     u64 total = 0;
-    u64 used = 0;
     svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
-    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
-    Diag("memory %s: used %lu MiB / total %lu MiB", tag, (unsigned long)(used >> 20), (unsigned long)(total >> 20));
+    const struct mallinfo info = mallinfo();
+    Diag("memory %s: heap in use %lu MiB, heap arena %lu MiB, process total %lu MiB", tag,
+         (unsigned long)(info.uordblks >> 20), (unsigned long)(info.arena >> 20), (unsigned long)(total >> 20));
 }
 
 } // namespace Switch
