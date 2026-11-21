@@ -36,6 +36,12 @@ void GetDisplaySize(int* width, int* height);
 // True while docked (AppletOperationMode_Console).
 bool IsDocked();
 
+// SDL's Switch joystick backend maps buttons by position (Xbox layout: the
+// bottom face button is "A"). Remap every connected controller so SDL's A/B/X/Y
+// follow the printed Nintendo labels (A right, B bottom, X top, Y left).
+// Idempotent per controller GUID; call before a controller is opened.
+void ApplyNintendoButtonLayout();
+
 // Call once per presented frame. Every 5 s logs average FPS, the worst frame
 // and the number of hitches (frames over 50 ms) through Diag().
 void OnFrame();

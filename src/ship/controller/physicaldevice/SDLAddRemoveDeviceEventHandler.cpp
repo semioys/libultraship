@@ -4,6 +4,9 @@
 #include "ship/controller/controldeck/ControlDeck.h"
 #include "ship/window/Window.h"
 #include "ship/window/gui/Gui.h"
+#ifdef __SWITCH__
+#include "ship/port/switch/SwitchImpl.h"
+#endif
 
 namespace Ship {
 
@@ -21,6 +24,10 @@ void SDLAddRemoveDeviceEventHandler::UpdateElement() {
     SDL_Event event;
     bool changed = false;
     while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_CONTROLLERDEVICEADDED, SDL_CONTROLLERDEVICEADDED) > 0) {
+#ifdef __SWITCH__
+        // Before the controller is opened, so it picks up the remapped buttons.
+        Ship::Switch::ApplyNintendoButtonLayout();
+#endif
         // from https://wiki.libsdl.org/SDL2/SDL_ControllerDeviceEvent: which - the joystick device index for
         // the SDL_CONTROLLERDEVICEADDED event
         Context::GetRawInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()->HandlePhysicalDeviceConnect(

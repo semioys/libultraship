@@ -10,7 +10,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <set>
+#include <string>
 #include <switch.h>
+#include <SDL2/SDL.h>
 
 #include "spdlog/spdlog.h"
 
@@ -176,6 +179,61 @@ void OnFrame() {
         sFrames = 0;
         sHitches = 0;
         sWorstNs = 0;
+    }
+}
+
+// Swaps the values of two "name:binding" fields in an SDL mapping string.
+static void SwapMappingFields(std::string& mapping, const char* first, const char* second) {
+    auto find = [&](const char* key) -> std::pair<size_t, size_t> {
+        const std::string needle = std::string(",") + key + ":";
+        size_t start = mapping.find(needle);
+        if (start == std::string::npos) {
+            return { std::string::npos, 0 };
+        }
+        start += needle.size();
+        size_t end = mapping.find(',', start);
+        if (end == std::string::npos) {
+            end = mapping.size();
+        }
+        return { start, end - start };
+    };
+    auto [firstPos, firstLen] = find(first);
+    auto [secondPos, secondLen] = find(second);
+    if (firstPos == std::string::npos || secondPos == std::string::npos) {
+        return;
+    }
+    const std::string firstValue = mapping.substr(firstPos, firstLen);
+    const std::string secondValue = mapping.substr(secondPos, secondLen);
+    // Replace the later field first so the earlier offset stays valid.
+    if (firstPos > secondPos) {
+        mapping.replace(firstPos, firstLen, secondValue);
+        mapping.replace(secondPos, secondLen, firstValue);
+    } else {
+        mapping.replace(secondPos, secondLen, firstValue);
+        mapping.replace(firstPos, firstLen, secondValue);
+    }
+}
+
+void ApplyNintendoButtonLayout() {
+    static std::set<std::string> sRemapped;
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        char guidStr[64];
+        SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(i), guidStr, sizeof(guidStr));
+        if (sRemapped.count(guidStr) != 0) {
+            continue;
+        }
+        char* raw = SDL_GameControllerMappingForGUID(SDL_JoystickGetDeviceGUID(i));
+        if (raw == nullptr) {
+            continue;
+        }
+        std::string mapping = raw;
+        SDL_free(raw);
+        SwapMappingFields(mapping, "a", "b");
+        SwapMappingFields(mapping, "x", "y");
+        if (SDL_GameControllerAddMapping(mapping.c_str()) >= 0) {
+            sRemapped.insert(guidStr);
+            Diag("Nintendo button layout applied to %s (%s)", guidStr, SDL_JoystickNameForIndex(i));
+        }
     }
 }
 
