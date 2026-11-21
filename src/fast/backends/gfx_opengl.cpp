@@ -95,13 +95,17 @@ static void Init() {
     }
     sDriverHash = hash;
 
-    if (FILE* f = fopen(ListPath().c_str(), "r")) {
-        unsigned long long id0;
-        unsigned long long id1;
-        while (fscanf(f, "%llx %llx", &id0, &id1) == 2) {
-            sKnownIds.emplace(id0, id1);
+    // Shader ids seen in earlier sessions (SD), plus a starter list shipped in
+    // romfs so the very first session prewarms the common variants too.
+    for (const std::string& path : { std::string(Ship::Switch::kRomfsPath) + "/shaders.list", ListPath() }) {
+        if (FILE* f = fopen(path.c_str(), "r")) {
+            unsigned long long id0;
+            unsigned long long id1;
+            while (fscanf(f, "%llx %llx", &id0, &id1) == 2) {
+                sKnownIds.emplace(id0, id1);
+            }
+            fclose(f);
         }
-        fclose(f);
     }
     const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     Ship::Switch::Diag("shader cache: binaries %s (%d formats), %zu known shaders, renderer '%s'",
@@ -179,8 +183,28 @@ static void Save(GLuint program, uint64_t sourceHash) {
     }
 }
 
+static std::set<std::pair<uint64_t, uint64_t>> sSessionIds;
+
+// Appends ids not yet on the SD list (the romfs starter list is not copied).
 static void Remember(uint64_t id0, uint64_t id1) {
-    if (!sKnownIds.emplace(id0, id1).second) {
+    sKnownIds.emplace(id0, id1);
+    if (!sSessionIds.emplace(id0, id1).second) {
+        return;
+    }
+    static bool sLoadedSdList = false;
+    static std::set<std::pair<uint64_t, uint64_t>> sSdIds;
+    if (!sLoadedSdList) {
+        sLoadedSdList = true;
+        if (FILE* f = fopen(ListPath().c_str(), "r")) {
+            unsigned long long a;
+            unsigned long long b;
+            while (fscanf(f, "%llx %llx", &a, &b) == 2) {
+                sSdIds.emplace(a, b);
+            }
+            fclose(f);
+        }
+    }
+    if (!sSdIds.emplace(id0, id1).second) {
         return;
     }
     if (FILE* f = fopen(ListPath().c_str(), "a")) {
