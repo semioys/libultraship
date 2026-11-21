@@ -21,7 +21,175 @@
 #include "fast/backends/gfx_opengl.h"
 #ifdef __SWITCH__
 #include <chrono>
+#include <cstdio>
+#include <set>
+#include <sys/stat.h>
 #include "ship/port/switch/SwitchImpl.h"
+
+// Mesa/nouveau compiles every shader variant on first use, which shows up as
+// a hitch. There is no driver disk cache in devkitPro's Mesa, so keep one
+// ourselves on the SD card:
+//  - program binaries (glGetProgramBinary) keyed by a hash of the generated
+//    GLSL plus the driver string, so shader or driver changes invalidate them;
+//  - a list of shader ids seen so far, built up front on the first frame
+//    (behind CPU boost) so known variants never compile during play.
+namespace SwitchShaderCache {
+
+constexpr uint32_t kMagic = 0x50424353; // "PBCS"
+constexpr uint32_t kVersion = 1;
+
+struct Header {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t driverHash;
+    uint64_t sourceHash;
+    uint32_t format;
+    uint32_t length;
+};
+
+static bool sInitialized = false;
+static bool sBinarySupported = false;
+static uint64_t sDriverHash = 0;
+static std::set<std::pair<uint64_t, uint64_t>> sKnownIds;
+
+static uint64_t Fnv1a(uint64_t hash, const void* data, size_t length) {
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < length; i++) {
+        hash ^= bytes[i];
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
+
+static std::string Dir() {
+    return std::string(Ship::Switch::kAppDirectoryPath) + "/shadercache";
+}
+
+static std::string ListPath() {
+    return Dir() + "/shaders.list";
+}
+
+static std::string BinaryPath(uint64_t sourceHash) {
+    char name[32];
+    snprintf(name, sizeof(name), "/%016llx.bin", (unsigned long long)sourceHash);
+    return Dir() + name;
+}
+
+static void Init() {
+    if (sInitialized) {
+        return;
+    }
+    sInitialized = true;
+    mkdir(Dir().c_str(), 0777);
+
+    GLint formats = 0;
+    glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
+    sBinarySupported = formats > 0;
+
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (GLenum name : { GL_VENDOR, GL_RENDERER, GL_VERSION }) {
+        const char* str = reinterpret_cast<const char*>(glGetString(name));
+        if (str != nullptr) {
+            hash = Fnv1a(hash, str, strlen(str));
+        }
+    }
+    sDriverHash = hash;
+
+    if (FILE* f = fopen(ListPath().c_str(), "r")) {
+        unsigned long long id0;
+        unsigned long long id1;
+        while (fscanf(f, "%llx %llx", &id0, &id1) == 2) {
+            sKnownIds.emplace(id0, id1);
+        }
+        fclose(f);
+    }
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    Ship::Switch::Diag("shader cache: binaries %s (%d formats), %zu known shaders, renderer '%s'",
+                       sBinarySupported ? "supported" : "UNSUPPORTED", (int)formats, sKnownIds.size(),
+                       renderer != nullptr ? renderer : "?");
+}
+
+static uint64_t HashSources(const std::string& vs, const std::string& fs) {
+    uint64_t hash = Fnv1a(0xcbf29ce484222325ULL, vs.data(), vs.size());
+    const char separator = 0;
+    hash = Fnv1a(hash, &separator, 1);
+    return Fnv1a(hash, fs.data(), fs.size());
+}
+
+// Links program from a cached binary. False when absent, stale or rejected.
+static bool Load(GLuint program, uint64_t sourceHash) {
+    if (!sBinarySupported) {
+        return false;
+    }
+    FILE* f = fopen(BinaryPath(sourceHash).c_str(), "rb");
+    if (f == nullptr) {
+        return false;
+    }
+    Header header;
+    std::vector<uint8_t> data;
+    bool ok = fread(&header, sizeof(header), 1, f) == 1 && header.magic == kMagic && header.version == kVersion &&
+              header.driverHash == sDriverHash && header.sourceHash == sourceHash && header.length > 0;
+    if (ok) {
+        data.resize(header.length);
+        ok = fread(data.data(), 1, data.size(), f) == data.size();
+    }
+    fclose(f);
+    if (!ok) {
+        return false;
+    }
+    glProgramBinary(program, header.format, data.data(), (GLsizei)data.size());
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    return linked == GL_TRUE;
+}
+
+static void Save(GLuint program, uint64_t sourceHash) {
+    if (!sBinarySupported) {
+        return;
+    }
+    GLint length = 0;
+    glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &length);
+    if (length <= 0) {
+        return;
+    }
+    std::vector<uint8_t> data(length);
+    GLsizei written = 0;
+    GLenum format = 0;
+    glGetProgramBinary(program, length, &written, &format, data.data());
+    if (written <= 0) {
+        return;
+    }
+    Header header = { kMagic, kVersion, sDriverHash, sourceHash, format, (uint32_t)written };
+    // Temp name first so a crash never leaves a truncated binary under the
+    // final name. Horizon's rename() won't overwrite, so remove the old one.
+    const std::string path = BinaryPath(sourceHash);
+    const std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (f == nullptr) {
+        return;
+    }
+    bool ok = fwrite(&header, sizeof(header), 1, f) == 1 && fwrite(data.data(), 1, written, f) == (size_t)written;
+    ok = (fclose(f) == 0) && ok;
+    if (ok) {
+        remove(path.c_str());
+        ok = rename(tmp.c_str(), path.c_str()) == 0;
+    }
+    if (!ok) {
+        remove(tmp.c_str());
+    }
+}
+
+static void Remember(uint64_t id0, uint64_t id1) {
+    if (!sKnownIds.emplace(id0, id1).second) {
+        return;
+    }
+    if (FILE* f = fopen(ListPath().c_str(), "a")) {
+        fprintf(f, "%016llx %016llx\n", (unsigned long long)id0, (unsigned long long)id1);
+        fclose(f);
+    }
+}
+
+} // namespace SwitchShaderCache
 #endif
 #include "ship/window/gui/Gui.h"
 #include <prism/processor.h>
@@ -532,7 +700,28 @@ void GfxRenderingAPIOGL::ClearShaderCache() {
 
 ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, uint64_t shader_id1) {
 #ifdef __SWITCH__
-    // Shaders compile on first use; on Mesa/Tegra that is a visible hitch.
+    SwitchShaderCache::Init();
+    // First shader of the session: build every variant seen in earlier runs
+    // now, so they never compile mid-game. Mostly cache loads after run one.
+    static bool sPrewarmDone = false;
+    if (!sPrewarmDone) {
+        sPrewarmDone = true;
+        const auto known = SwitchShaderCache::sKnownIds;
+        if (!known.empty()) {
+            Ship::Switch::ScopedCpuBoost boost;
+            const auto prewarmStart = std::chrono::steady_clock::now();
+            int built = 0;
+            for (const auto& [id0, id1] : known) {
+                if ((id0 != shader_id0 || id1 != shader_id1) && LookupShader(id0, id1) == nullptr) {
+                    CreateAndLoadNewShader(id0, id1);
+                    built++;
+                }
+            }
+            Ship::Switch::Diag(
+                "prewarmed %d shaders in %.1f ms", built,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prewarmStart).count());
+        }
+    }
     const auto compileStart = std::chrono::steady_clock::now();
 #endif
     CCFeatures cc_features;
@@ -543,6 +732,12 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
     const GLint lengths[2] = { (GLint)vs_buf.size(), (GLint)fs_buf.size() };
     GLint success;
 
+#ifdef __SWITCH__
+    GLuint shader_program = glCreateProgram();
+    const uint64_t sourceHash = SwitchShaderCache::HashSources(vs_buf, fs_buf);
+    const bool fromCache = SwitchShaderCache::Load(shader_program, sourceHash);
+    if (!fromCache) {
+#endif
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
     glCompileShader(vertex_shader);
@@ -571,9 +766,14 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         abort();
     }
 
+#ifndef __SWITCH__
     GLuint shader_program = glCreateProgram();
+#endif
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
+#ifdef __SWITCH__
+    glProgramParameteri(shader_program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+#endif
     glLinkProgram(shader_program);
 
     glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
@@ -586,6 +786,15 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
                      error_log.c_str());
         abort();
     }
+#ifdef __SWITCH__
+    SwitchShaderCache::Save(shader_program, sourceHash);
+    glDetachShader(shader_program, vertex_shader);
+    glDetachShader(shader_program, fragment_shader);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+    }
+    SwitchShaderCache::Remember(shader_id0, shader_id1);
+#endif
 
     size_t cnt = 0;
 
@@ -694,8 +903,9 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         static int sShaderCount = 0;
         const double ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
-        Ship::Switch::Diag("shader #%d compiled in %.1f ms (%016llx/%016llx)", ++sShaderCount, ms,
-                           (unsigned long long)shader_id0, (unsigned long long)shader_id1);
+        Ship::Switch::Diag("shader #%d %s in %.1f ms (%016llx/%016llx)", ++sShaderCount,
+                           fromCache ? "loaded from cache" : "compiled", ms, (unsigned long long)shader_id0,
+                           (unsigned long long)shader_id1);
     }
 #endif
     return prg;
