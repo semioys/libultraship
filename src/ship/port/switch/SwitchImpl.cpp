@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdio>
 #include <arpa/inet.h>
 #include <sys/stat.h>
@@ -111,19 +112,30 @@ bool IsNxlinkConnected() {
     return sNxlinkSocket >= 0;
 }
 
+void Diag(const char* fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    printf("[switch] %s\n", buf);
+    fflush(stdout);
+    SPDLOG_INFO("[switch] {}", buf);
+}
+
 static std::atomic<int> sCpuBoostRefs { 0 };
 
 void SetCpuBoost(bool enable) {
     if (enable) {
         if (sCpuBoostRefs.fetch_add(1) == 0) {
             Result rc = appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
-            SPDLOG_INFO("[switch] CPU boost on (rc=0x{:x})", rc);
+            Diag("CPU boost on (rc=0x%x)", rc);
         }
     } else {
         int prev = sCpuBoostRefs.fetch_sub(1);
         if (prev == 1) {
             Result rc = appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
-            SPDLOG_INFO("[switch] CPU boost off (rc=0x{:x})", rc);
+            Diag("CPU boost off (rc=0x%x)", rc);
         } else if (prev <= 0) {
             sCpuBoostRefs = 0;
         }
@@ -135,7 +147,7 @@ void LogMemoryUsage(const char* tag) {
     u64 used = 0;
     svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
     svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
-    SPDLOG_INFO("[switch] memory {}: used {} MiB / total {} MiB", tag, used >> 20, total >> 20);
+    Diag("memory %s: used %lu MiB / total %lu MiB", tag, (unsigned long)(used >> 20), (unsigned long)(total >> 20));
 }
 
 } // namespace Switch

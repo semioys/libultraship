@@ -34,6 +34,11 @@ bool IsNxlinkConnected();
 // until the last one is released.
 void SetCpuBoost(bool enable);
 
+// Diagnostic line for hardware testing: always reaches stdout (nxlink) with a
+// "[switch] " prefix, regardless of the spdlog level, and is mirrored to the
+// log file.
+void Diag(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // Logs process memory usage (used / total) with a tag.
 void LogMemoryUsage(const char* tag);
 
