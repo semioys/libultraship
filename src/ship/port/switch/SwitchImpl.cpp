@@ -62,13 +62,13 @@ void userAppInit(void) {
     // Relative paths (./mods, logs, ...) resolve against the app directory.
     chdir(Ship::Switch::kAppDirectoryPath);
 
-    printf("[switch] PaperBoat starting: romfs=%s nxlink=%s applet_type=%d\n", sRomfsMounted ? "ok" : "FAILED",
-           sNxlinkSocket >= 0 ? "connected" : "off", (int)appletGetAppletType());
+    Ship::Switch::Diag("PaperBoat starting: romfs=%s nxlink=%s applet_type=%d", sRomfsMounted ? "ok" : "FAILED",
+                       sNxlinkSocket >= 0 ? "connected" : "off", (int)appletGetAppletType());
 }
 
 // Called by libnx after main() returns or exit() is called.
 void userAppExit(void) {
-    printf("[switch] PaperBoat exiting\n");
+    Ship::Switch::Diag("PaperBoat exiting");
     fflush(stdout);
     fflush(stderr);
 
@@ -118,8 +118,19 @@ void Diag(const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    printf("[switch] %s\n", buf);
-    fflush(stdout);
+    // Straight to fd 1 (the nxlink socket when connected). newlib keeps a
+    // separate stdout FILE per thread, and output from worker threads'
+    // FILEs did not reach nxlink in testing.
+    char line[540];
+    int len = snprintf(line, sizeof(line), "[switch] %s\n", buf);
+    if (len > 0) {
+        if (len > (int)sizeof(line) - 1) {
+            len = sizeof(line) - 1;
+        }
+        if (write(STDOUT_FILENO, line, len) < 0) {
+            SPDLOG_WARN("[switch] {}", buf);
+        }
+    }
     SPDLOG_INFO("[switch] {}", buf);
 }
 

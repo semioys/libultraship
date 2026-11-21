@@ -121,6 +121,15 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
+#=================== prism ===================
+# prism's CMakeLists overwrites CMAKE_CXX_FLAGS, dropping the toolchain's
+# -D__SWITCH__/-march/-mtp=soft/-ftls-model. Without -mtp=soft, thread_local
+# reads the wrong thread register on Horizon. Put them back on the target.
+if(TARGET prism)
+    separate_arguments(_lus_switch_cxx_flags UNIX_COMMAND "${CMAKE_CXX_FLAGS}")
+    target_compile_options(prism PRIVATE ${_lus_switch_cxx_flags})
+endif()
+
 #=================== ImGui ===================
 target_link_libraries(ImGui PUBLIC SDL2::SDL2 ${LUS_SWITCH_GL_LIBRARIES})
 target_compile_definitions(ImGui PUBLIC
