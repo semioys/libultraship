@@ -325,11 +325,20 @@ ScopedFrameCost::~ScopedFrameCost() {
 
 // Called with the length of a frame that took far longer than the target:
 // prints what the frame spent its time on, then starts the next frame clean.
-static void ReportFrameCosts(u64 frameNs) {
-    if (frameNs > 30000000ULL) {
-        static int sReports = 0;
-        if (sReports < 200) {
-            sReports++;
+static void ReportFrameCosts(u64 now, u64 frameNs) {
+    // A spike is a frame much longer than the current target: 30 ms while
+    // aiming for 60 FPS, 60 ms at 30 FPS (where every frame is ~33 ms).
+    const u64 threshold = (sHighTarget && !sHolding) ? 30000000ULL : 60000000ULL;
+    if (frameNs > threshold) {
+        // At most two reports per second so a heavy stretch can't flood the log.
+        static u64 sWindowStartNs = 0;
+        static int sInWindow = 0;
+        if (now - sWindowStartNs > 1000000000ULL) {
+            sWindowStartNs = now;
+            sInWindow = 0;
+        }
+        if (sInWindow < 2) {
+            sInWindow++;
             const auto ms = [](FrameCost k) { return sCostNs[(int)k] / 1e6; };
             const double known = ms(FrameCost::Render) + ms(FrameCost::Shader) + ms(FrameCost::Texture) +
                                  ms(FrameCost::Resource);
@@ -359,7 +368,7 @@ void OnFrame() {
     if (sLastFrame != 0) {
         const u64 frameNs = now - sLastFrame;
         TrackAdaptiveFps(now, frameNs);
-        ReportFrameCosts(frameNs);
+        ReportFrameCosts(now, frameNs);
         sWorstNs = frameNs > sWorstNs ? frameNs : sWorstNs;
         if (frameNs > 50000000ULL) {
             sHitches++;
