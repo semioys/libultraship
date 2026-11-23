@@ -933,15 +933,71 @@ void GfxWindowBackendSDL2::SwapBuffersBegin() {
         SDL_RenderSetVSync(mRenderer, mVsyncEnabled ? 1 : 0);
     }
 
-    SyncFramerateWithTime();
 #ifdef __SWITCH__
     {
+        // Pace frames with the display instead of a sleep timer. A timer at
+        // the same rate as vsync drifts against it, so every few seconds a
+        // frame misses its vblank and the next one waits for a free buffer
+        // (28-40 ms frames with nothing to show for it in the breakdown).
+        // 60 fps: swap interval 1; 30 fps: swap interval 2. The timer is
+        // only used when vsync is off or the driver turns out not to block
+        // (checked by measuring the real swap rate).
+        static int sInterval = -1;
+        static bool sDisplayPaced = false;
+        static bool sVsyncNotBlocking = false;
+        static uint64_t sLastSwap = 0;
+        static uint64_t sIntervalSum = 0;
+        static int sIntervalFrames = 0;
+        int interval = 0;
+        if (mVsyncEnabled && !sVsyncNotBlocking) {
+            interval = mTargetFps >= 55 ? 1 : (mTargetFps >= 28 && mTargetFps <= 32 ? 2 : 0);
+        }
+        if (interval != sInterval) {
+            sInterval = interval;
+            sDisplayPaced = interval > 0 && SDL_GL_SetSwapInterval(interval) == 0;
+            if (!sDisplayPaced) {
+                SDL_GL_SetSwapInterval(mVsyncEnabled ? 1 : 0);
+            }
+            sIntervalSum = 0;
+            sIntervalFrames = 0;
+            sLastSwap = 0;
+            Ship::Switch::Diag("frame pacing: %s (target %d fps)",
+                               sDisplayPaced ? (interval == 2 ? "vsync, every 2nd vblank" : "vsync")
+                                             : "timer",
+                               mTargetFps);
+        }
+        if (!sDisplayPaced) {
+            SyncFramerateWithTime();
+        }
         Ship::Switch::ScopedFrameCost presentCost(Ship::Switch::FrameCost::Present);
         SDL_GL_SwapWindow(mWnd);
+        if (sDisplayPaced) {
+            // Verify the swaps really wait for vblank: if two seconds of frames
+            // came in clearly faster than the target, fall back to the timer.
+            const uint64_t now = SDL_GetPerformanceCounter();
+            if (sLastSwap != 0) {
+                sIntervalSum += now - sLastSwap;
+                if (++sIntervalFrames >= 120) {
+                    const double avgMs = (double)sIntervalSum * 1000.0 / (double)SDL_GetPerformanceFrequency() /
+                                         sIntervalFrames;
+                    if (avgMs < 0.9 * 1000.0 / mTargetFps) {
+                        sVsyncNotBlocking = true;
+                        Ship::Switch::Diag("frame pacing: swaps don't wait for vblank (%.1f ms per frame), "
+                                           "using the timer",
+                                           avgMs);
+                    }
+                    sIntervalSum = 0;
+                    sIntervalFrames = 0;
+                }
+            }
+            sLastSwap = now;
+            previous_time = qpc_to_100ns(now); // keeps the timer in step if it takes over
+        }
     }
     // Once per presented frame (HandleEvents runs more often than that).
     Ship::Switch::OnFrame();
 #else
+    SyncFramerateWithTime();
     SDL_GL_SwapWindow(mWnd);
 #endif
 }
