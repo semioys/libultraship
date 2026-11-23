@@ -5809,7 +5809,7 @@ int Interpreter::RunPostPasses() {
     {
         std::lock_guard<std::mutex> lock(mPostPassMutex);
         for (const auto& pass : mPostPasses) {
-            if (pass.enabled) {
+            if (pass.enabled && !gfx_is_shader_broken(pass.path)) {
                 passes.push_back(pass);
             }
         }
@@ -6051,6 +6051,22 @@ void Interpreter::SetShaderSettingValue(size_t shaderId, const std::string& var,
     cvars->Save();
     // Settings are baked into the generated source; recompile everything
     gfx_shader_cache_clear();
+}
+
+static std::mutex sBrokenShaderMutex;
+static std::set<std::string> sBrokenShaders;
+
+void gfx_mark_shader_broken(const char* path) {
+    if (path == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(sBrokenShaderMutex);
+    sBrokenShaders.insert(path);
+}
+
+bool gfx_is_shader_broken(const std::string& path) {
+    std::lock_guard<std::mutex> lock(sBrokenShaderMutex);
+    return sBrokenShaders.count(path) != 0;
 }
 
 const char* gfx_get_shader(int16_t id) {

@@ -1037,8 +1037,54 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
 #endif
     CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
+#ifdef __SWITCH__
+    // A shader that can't be built (bad custom/post shader, driver quirk) must
+    // not take the game down: log why, remember it, and let the caller skip it.
+    static std::set<std::pair<uint64_t, uint64_t>> sFailed;
+    const std::pair<uint64_t, uint64_t> failKey(shader_id0, shader_id1);
+    if (sFailed.count(failKey) != 0) {
+        return nullptr;
+    }
+    const char* customName = Fast::gfx_get_shader(cc_features.shader_id);
+    auto failShader = [&](const char* stage, const std::string& detail) -> ShaderProgram* {
+        sFailed.insert(failKey);
+        if (customName != nullptr) {
+            Fast::gfx_mark_shader_broken(customName);
+        }
+        Ship::Switch::Diag("SHADER FAILED (%s) %s [%016llx/%016llx]: %.600s", stage,
+                           customName != nullptr ? customName : "default", (unsigned long long)shader_id0,
+                           (unsigned long long)shader_id1, detail.c_str());
+        return nullptr;
+    };
+    std::string fs_buf;
+    std::string vs_buf;
+    try {
+        fs_buf = BuildFsShader(cc_features);
+        vs_buf = BuildVsShader(cc_features);
+    } catch (const std::exception& e) {
+        return failShader("preprocess", e.what());
+    } catch (...) {
+        return failShader("preprocess", "unknown exception");
+    }
+    auto infoLog = [](GLuint object, bool program) {
+        GLint length = 0;
+        if (program) {
+            glGetProgramiv(object, GL_INFO_LOG_LENGTH, &length);
+        } else {
+            glGetShaderiv(object, GL_INFO_LOG_LENGTH, &length);
+        }
+        std::string text(length > 0 ? (size_t)length : (size_t)1, '\0');
+        if (program) {
+            glGetProgramInfoLog(object, (GLsizei)text.size(), nullptr, text.data());
+        } else {
+            glGetShaderInfoLog(object, (GLsizei)text.size(), nullptr, text.data());
+        }
+        return text;
+    };
+#else
     const auto fs_buf = BuildFsShader(cc_features);
     const auto vs_buf = BuildVsShader(cc_features);
+#endif
     const GLchar* sources[2] = { vs_buf.data(), fs_buf.data() };
     const GLint lengths[2] = { (GLint)vs_buf.size(), (GLint)fs_buf.size() };
     GLint success;
@@ -1056,6 +1102,12 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
     if (!success) {
         GLint max_length = 0;
         glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
+#ifdef __SWITCH__
+        const std::string log = infoLog(vertex_shader, false);
+        glDeleteShader(vertex_shader);
+        glDeleteProgram(shader_program);
+        return failShader("vertex", log);
+#endif
         char error_log[1024];
         // fprintf(stderr, "Vertex shader compilation failed\n");
         glGetShaderInfoLog(vertex_shader, max_length, &max_length, &error_log[0]);
@@ -1070,6 +1122,13 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
     if (!success) {
         GLint max_length = 0;
         glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
+#ifdef __SWITCH__
+        const std::string log = infoLog(fragment_shader, false);
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        glDeleteProgram(shader_program);
+        return failShader("fragment", log);
+#endif
         char error_log[1024];
         fprintf(stderr, "Fragment shader compilation failed\n");
         glGetShaderInfoLog(fragment_shader, max_length, &max_length, &error_log[0]);
@@ -1095,6 +1154,12 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         glGetProgramInfoLog(shader_program, max_length, &max_length, error_log.data());
         SPDLOG_ERROR("Shader program link failed (shader_id0={:#x}, shader_id1={:#x}): {}", shader_id0, shader_id1,
                      error_log.c_str());
+#ifdef __SWITCH__
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        glDeleteProgram(shader_program);
+        return failShader("link", error_log);
+#endif
         abort();
     }
 #ifdef __SWITCH__

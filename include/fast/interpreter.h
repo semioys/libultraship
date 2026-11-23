@@ -974,6 +974,10 @@ const char* gfx_get_current_ucode_name();
 void gfx_push_current_dir(char* path);
 int32_t gfx_check_image_signature(const char* imgData);
 const char* gfx_get_shader(int16_t id);
+// Marks a custom/post shader path as failing to build; the post-pass chain
+// skips such passes instead of drawing nothing.
+void gfx_mark_shader_broken(const char* path);
+bool gfx_is_shader_broken(const std::string& path);
 
 // Shader-pack settings plumbing used by the backend shader builders:
 // register the @setting declarations discovered while processing a template,
