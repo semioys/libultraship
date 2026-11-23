@@ -286,9 +286,10 @@ static void TrackAdaptiveFps(u64 now, u64 frameNs) {
         sFrameRingFill++;
         return; // need a full second of history
     }
-    // Only a sustained drop counts: the last second averaged below 52 FPS, or
-    // at least 10 frames took longer than 24 ms (a 1.5x miss). Isolated spikes
-    // and frames that just miss vsync by a few ms keep 60.
+    // Only a sustained drop counts: the last second averaged below 52 FPS.
+    // Individual long frames don't: with vsync pacing the CPU runs a frame
+    // ahead, so a 30 ms frame is followed by a short one and the display
+    // still gets a new image every vblank (the average stays at 60).
     uint64_t totalUs = 0;
     int veryslow = 0;
     for (int i = 0; i < ringSize; i++) {
@@ -296,7 +297,7 @@ static void TrackAdaptiveFps(u64 now, u64 frameNs) {
         veryslow += sFrameRing[i] > 24000 ? 1 : 0;
     }
     const double avgFps = ringSize * 1e6 / (double)totalUs;
-    if (avgFps < 52.0 || veryslow >= 10) {
+    if (avgFps < 52.0) {
         const int sSlowCount = veryslow;
         // Failing again right after a release: back off longer (up to 60 s).
         if (sLastReleaseNs != 0 && now - sLastReleaseNs < 3000000000ULL) {
@@ -330,9 +331,11 @@ ScopedFrameCost::~ScopedFrameCost() {
 // Called with the length of a frame that took far longer than the target:
 // prints what the frame spent its time on, then starts the next frame clean.
 static void ReportFrameCosts(u64 now, u64 frameNs) {
-    // A spike is a frame much longer than the current target: 30 ms while
+    // A spike is a frame much longer than the current target: 35 ms while
     // aiming for 60 FPS, 60 ms at 30 FPS (where every frame is ~33 ms).
-    const u64 threshold = (sHighTarget && !sHolding) ? 30000000ULL : 60000000ULL;
+    // Two-vblank frames (~30 ms) at 60 are normal vsync back-pressure when
+    // the CPU is a frame ahead and aren't reported.
+    const u64 threshold = (sHighTarget && !sHolding) ? 35000000ULL : 60000000ULL;
     if (frameNs > threshold) {
         // At most two reports per second so a heavy stretch can't flood the log.
         static u64 sWindowStartNs = 0;
