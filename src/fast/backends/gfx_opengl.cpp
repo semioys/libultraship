@@ -194,7 +194,18 @@ static void Save(GLuint program, uint64_t sourceHash) {
 static std::set<std::pair<uint64_t, uint64_t>> sSessionIds;
 
 // Appends ids not yet on the SD list (the romfs starter list is not copied).
+// Ids that point at a custom shader (CRT, edge blur, material shaders) carry
+// an index handed out at registration time, which differs between sessions;
+// building one before its shader is registered would cache the default
+// program under that id. Those are never prewarmed or remembered.
+static bool UsesCustomShader(uint64_t id1) {
+    return Fast::ShaderIdUnmask(id1) != (int16_t)-1;
+}
+
 static void Remember(uint64_t id0, uint64_t id1) {
+    if (UsesCustomShader(id1)) {
+        return;
+    }
     sKnownIds.emplace(id0, id1);
     if (!sSessionIds.emplace(id0, id1).second) {
         return;
@@ -1549,6 +1560,8 @@ void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size
             ? sizeof(float) * mCurrentShaderProgram->numFloats
             : sizeof(float);
     GLint drawFirst = 0;
+    // The ring lives in mOpenglVbo; make sure that's the buffer being written.
+    glBindBuffer(GL_ARRAY_BUFFER, mOpenglVbo);
     if (bytes <= kRingBytes) {
         size_t offset = (sRingOffset + stride - 1) / stride * stride;
         if (offset + bytes > kRingBytes) {
@@ -1661,7 +1674,7 @@ void GfxRenderingAPIOGL::StartFrame() {
         SwitchShaderCache::Init();
         std::vector<std::pair<uint64_t, uint64_t>> todo;
         for (const auto& ids : SwitchShaderCache::sKnownIds) {
-            if (LookupShader(ids.first, ids.second) == nullptr) {
+            if (!SwitchShaderCache::UsesCustomShader(ids.second) && LookupShader(ids.first, ids.second) == nullptr) {
                 todo.push_back(ids);
             }
         }

@@ -276,6 +276,10 @@ static void TrackAdaptiveFps(u64 now, u64 frameNs) {
         return;
     }
     const int ringSize = (int)(sizeof(sFrameRing) / sizeof(sFrameRing[0]));
+    if (frameNs > 100000000ULL) {
+        // A loading hitch (map change), not a sustained slowdown: ignore it.
+        return;
+    }
     sFrameRing[sFrameRingPos] = (uint32_t)(frameNs / 1000);
     sFrameRingPos = (sFrameRingPos + 1) % ringSize;
     if (sFrameRingFill < ringSize) {
