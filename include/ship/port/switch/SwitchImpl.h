@@ -84,6 +84,24 @@ bool ShouldHoldThirtyFps();
 // Tells the tracker whether the game is currently aiming for more than 30 FPS.
 void SetHighFrameRateTarget(bool high);
 
+// Spike profiler: costs accumulated during the current frame. When a frame
+// takes far longer than the target, OnFrame() logs the breakdown.
+enum class FrameCost { Render, Texture, Shader, Resource, Count };
+void AddFrameCost(FrameCost kind, uint64_t ns);
+
+// Times a scope into the spike profiler.
+class ScopedFrameCost {
+  public:
+    explicit ScopedFrameCost(FrameCost kind);
+    ~ScopedFrameCost();
+    ScopedFrameCost(const ScopedFrameCost&) = delete;
+    ScopedFrameCost& operator=(const ScopedFrameCost&) = delete;
+
+  private:
+    FrameCost mKind;
+    uint64_t mStart;
+};
+
 // Call once per presented frame. Every 5 s logs average FPS, the worst frame
 // and the number of hitches (frames over 50 ms) through Diag().
 void OnFrame();

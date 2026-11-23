@@ -1279,6 +1279,7 @@ ShaderProgram* GfxRenderingAPIOGL::CreateAndLoadNewShader(uint64_t shader_id0, u
         static int sShaderCount = 0;
         const double ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compileStart).count();
+        Ship::Switch::AddFrameCost(Ship::Switch::FrameCost::Shader, (uint64_t)(ms * 1e6));
         Ship::Switch::Diag("shader #%d %s in %.1f ms (%016llx/%016llx)", ++sShaderCount,
                            asyncProgram != 0 ? "finished (async)" : (fromCache ? "loaded from cache" : "compiled"),
                            ms, (unsigned long long)shader_id0, (unsigned long long)shader_id1);

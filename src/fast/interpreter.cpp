@@ -3071,6 +3071,9 @@ void Interpreter::UploadMipChain(uint32_t baseTile) {
 }
 
 void Interpreter::ImportTexture(int i, int tile, bool importReplacement) {
+#ifdef __SWITCH__
+    Ship::Switch::ScopedFrameCost textureCost(Ship::Switch::FrameCost::Texture);
+#endif
     mImportTile = tile;
     mImportSlot = i;
     uint8_t fmt = mRdp->texture_tile[tile].fmt;
@@ -7909,6 +7912,19 @@ void Interpreter::RunGuiOnly() {
 
 void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements,
                       const std::unordered_map<Gfx*, Gfx*>& dl_replacements) {
+#ifdef __SWITCH__
+    Ship::Switch::ScopedFrameCost renderCost(Ship::Switch::FrameCost::Render);
+    {
+        // Blocking resource loads since the previous frame (game logic and renderer).
+        auto resourceManager = Ship::Context::GetRawInstance()->GetResourceManager();
+        if (resourceManager != nullptr) {
+            const auto stats = resourceManager->ConsumeLoadStats();
+            for (uint64_t i = 0; i < stats.BlockingCalls; i++) {
+                Ship::Switch::AddFrameCost(Ship::Switch::FrameCost::Resource, i == 0 ? stats.BlockingNs : 0);
+            }
+        }
+    }
+#endif
     SpReset();
 
 #ifdef __SWITCH__

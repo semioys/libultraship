@@ -245,9 +245,10 @@ static bool sHolding = false;
 static u64 sHoldUntilNs = 0;
 static u64 sHoldLengthNs = 4000000000ULL;
 static u64 sLastReleaseNs = 0;
-static uint8_t sSlowRing[60];
-static int sSlowRingPos = 0;
-static int sSlowCount = 0;
+// Last second of frame times (microseconds), only while aiming for 60.
+static uint32_t sFrameRing[60];
+static int sFrameRingPos = 0;
+static int sFrameRingFill = 0;
 
 void SetHighFrameRateTarget(bool high) {
     sHighTarget = high;
@@ -268,18 +269,31 @@ static void TrackAdaptiveFps(u64 now, u64 frameNs) {
         if (now >= sHoldUntilNs) {
             sHolding = false;
             sLastReleaseNs = now;
-            memset(sSlowRing, 0, sizeof(sSlowRing));
-            sSlowCount = 0;
+            sFrameRingPos = 0;
+            sFrameRingFill = 0;
             Diag("adaptive fps: trying 60 again");
         }
         return;
     }
-    // Missed the 60 FPS budget by a clear margin (vsync jitter is ~1 ms).
-    const uint8_t slow = frameNs > 19000000ULL ? 1 : 0;
-    sSlowCount += slow - sSlowRing[sSlowRingPos];
-    sSlowRing[sSlowRingPos] = slow;
-    sSlowRingPos = (sSlowRingPos + 1) % (int)sizeof(sSlowRing);
-    if (sSlowCount >= 12) { // a fifth of the last second
+    const int ringSize = (int)(sizeof(sFrameRing) / sizeof(sFrameRing[0]));
+    sFrameRing[sFrameRingPos] = (uint32_t)(frameNs / 1000);
+    sFrameRingPos = (sFrameRingPos + 1) % ringSize;
+    if (sFrameRingFill < ringSize) {
+        sFrameRingFill++;
+        return; // need a full second of history
+    }
+    // Only a sustained drop counts: the last second averaged below 52 FPS, or
+    // at least 10 frames took longer than 24 ms (a 1.5x miss). Isolated spikes
+    // and frames that just miss vsync by a few ms keep 60.
+    uint64_t totalUs = 0;
+    int veryslow = 0;
+    for (int i = 0; i < ringSize; i++) {
+        totalUs += sFrameRing[i];
+        veryslow += sFrameRing[i] > 24000 ? 1 : 0;
+    }
+    const double avgFps = ringSize * 1e6 / (double)totalUs;
+    if (avgFps < 52.0 || veryslow >= 10) {
+        const int sSlowCount = veryslow;
         // Failing again right after a release: back off longer (up to 60 s).
         if (sLastReleaseNs != 0 && now - sLastReleaseNs < 3000000000ULL) {
             sHoldLengthNs = sHoldLengthNs * 2 > 60000000000ULL ? 60000000000ULL : sHoldLengthNs * 2;
@@ -288,9 +302,46 @@ static void TrackAdaptiveFps(u64 now, u64 frameNs) {
         }
         sHolding = true;
         sHoldUntilNs = now + sHoldLengthNs;
-        Diag("adaptive fps: holding 30 FPS for %.0f s (%d slow frames in the last 60)", sHoldLengthNs / 1e9,
-             sSlowCount);
+        Diag("adaptive fps: holding 30 FPS for %.0f s (last second %.1f fps, %d frames over 24 ms)",
+             sHoldLengthNs / 1e9, avgFps, sSlowCount);
     }
+}
+
+// ---- Spike profiler -----------------------------------------------------------
+static uint64_t sCostNs[(int)FrameCost::Count];
+static uint32_t sCostCount[(int)FrameCost::Count];
+
+void AddFrameCost(FrameCost kind, uint64_t ns) {
+    sCostNs[(int)kind] += ns;
+    sCostCount[(int)kind]++;
+}
+
+ScopedFrameCost::ScopedFrameCost(FrameCost kind) : mKind(kind), mStart(armTicksToNs(armGetSystemTick())) {
+}
+
+ScopedFrameCost::~ScopedFrameCost() {
+    AddFrameCost(mKind, armTicksToNs(armGetSystemTick()) - mStart);
+}
+
+// Called with the length of a frame that took far longer than the target:
+// prints what the frame spent its time on, then starts the next frame clean.
+static void ReportFrameCosts(u64 frameNs) {
+    if (frameNs > 30000000ULL) {
+        static int sReports = 0;
+        if (sReports < 200) {
+            sReports++;
+            const auto ms = [](FrameCost k) { return sCostNs[(int)k] / 1e6; };
+            const double known = ms(FrameCost::Render) + ms(FrameCost::Shader) + ms(FrameCost::Texture) +
+                                 ms(FrameCost::Resource);
+            Diag("spike %.1f ms: render %.1f ms (textures %u in %.1f ms, shaders %u in %.1f ms), "
+                 "resource loads %u waited %.1f ms, other %.1f ms",
+                 frameNs / 1e6, ms(FrameCost::Render), sCostCount[(int)FrameCost::Texture], ms(FrameCost::Texture),
+                 sCostCount[(int)FrameCost::Shader], ms(FrameCost::Shader), sCostCount[(int)FrameCost::Resource],
+                 ms(FrameCost::Resource), frameNs / 1e6 - known > 0 ? frameNs / 1e6 - known : 0.0);
+        }
+    }
+    memset(sCostNs, 0, sizeof(sCostNs));
+    memset(sCostCount, 0, sizeof(sCostCount));
 }
 
 void OnFrame() {
@@ -308,6 +359,7 @@ void OnFrame() {
     if (sLastFrame != 0) {
         const u64 frameNs = now - sLastFrame;
         TrackAdaptiveFps(now, frameNs);
+        ReportFrameCosts(frameNs);
         sWorstNs = frameNs > sWorstNs ? frameNs : sWorstNs;
         if (frameNs > 50000000ULL) {
             sHitches++;
