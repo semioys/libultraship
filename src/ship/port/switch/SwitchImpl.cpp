@@ -342,13 +342,15 @@ static void ReportFrameCosts(u64 now, u64 frameNs) {
             const auto ms = [](FrameCost k) { return sCostNs[(int)k] / 1e6; };
             // Texture, shader and GPU sync time is inside render; resource waits and
             // present are outside it; "other" is the rest (game logic, waiting for it).
-            const double known = ms(FrameCost::Render) + ms(FrameCost::Resource) + ms(FrameCost::Present);
+            const double known = ms(FrameCost::Render) + ms(FrameCost::Resource) + ms(FrameCost::Present) +
+                                 ms(FrameCost::GameWait);
             Diag("spike %.1f ms: render %.1f ms (textures %u in %.1f, shaders %u in %.1f, gpu sync %u in %.1f), "
-                 "present %.1f ms, resource loads %u waited %.1f ms, other %.1f ms",
+                 "present %.1f ms, waiting for game logic %.1f ms, resource loads %u waited %.1f ms, other %.1f ms",
                  frameNs / 1e6, ms(FrameCost::Render), sCostCount[(int)FrameCost::Texture], ms(FrameCost::Texture),
                  sCostCount[(int)FrameCost::Shader], ms(FrameCost::Shader), sCostCount[(int)FrameCost::GpuSync],
-                 ms(FrameCost::GpuSync), ms(FrameCost::Present), sCostCount[(int)FrameCost::Resource],
-                 ms(FrameCost::Resource), frameNs / 1e6 - known > 0 ? frameNs / 1e6 - known : 0.0);
+                 ms(FrameCost::GpuSync), ms(FrameCost::Present), ms(FrameCost::GameWait),
+                 sCostCount[(int)FrameCost::Resource], ms(FrameCost::Resource),
+                 frameNs / 1e6 - known > 0 ? frameNs / 1e6 - known : 0.0);
         }
     }
     memset(sCostNs, 0, sizeof(sCostNs));

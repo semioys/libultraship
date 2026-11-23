@@ -1533,7 +1533,47 @@ void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size
     SetPerDrawUniforms();
 
     // printf("flushing %d tris\n", buf_vbo_num_tris);
+#ifdef __SWITCH__
+    // Streaming ring: re-specifying the whole buffer for each of the hundreds
+    // of draws per frame made nouveau allocate a new buffer every time, and now
+    // and then wait for the GPU to free old ones (40 ms stalls inside render).
+    // Append into one large buffer without synchronization instead, and orphan
+    // it only when it wraps (the GPU keeps the old storage until it's done).
+    // Vertices are placed on a stride boundary so the shader's attribute
+    // layout still applies, and drawn with `first` pointing at them.
+    static constexpr size_t kRingBytes = 8u * 1024u * 1024u;
+    static size_t sRingOffset = kRingBytes; // forces the first orphan
+    const size_t bytes = sizeof(float) * buf_vbo_len;
+    const size_t stride =
+        mCurrentShaderProgram != nullptr && mCurrentShaderProgram->numFloats > 0
+            ? sizeof(float) * mCurrentShaderProgram->numFloats
+            : sizeof(float);
+    GLint drawFirst = 0;
+    if (bytes <= kRingBytes) {
+        size_t offset = (sRingOffset + stride - 1) / stride * stride;
+        if (offset + bytes > kRingBytes) {
+            glBufferData(GL_ARRAY_BUFFER, kRingBytes, nullptr, GL_STREAM_DRAW);
+            offset = 0;
+        }
+        void* dst = glMapBufferRange(GL_ARRAY_BUFFER, offset, bytes,
+                                     GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+        if (dst != nullptr) {
+            memcpy(dst, buf_vbo, bytes);
+            glUnmapBuffer(GL_ARRAY_BUFFER);
+            sRingOffset = offset + bytes;
+            drawFirst = (GLint)(offset / stride);
+        } else {
+            glBufferData(GL_ARRAY_BUFFER, bytes, buf_vbo, GL_STREAM_DRAW);
+            sRingOffset = kRingBytes; // storage replaced: re-create the ring next draw
+        }
+    } else {
+        glBufferData(GL_ARRAY_BUFFER, bytes, buf_vbo, GL_STREAM_DRAW);
+        sRingOffset = kRingBytes;
+    }
+#else
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * buf_vbo_len, buf_vbo, GL_STREAM_DRAW);
+    const GLint drawFirst = 0;
+#endif
 
     if (mCurrentZmodeDecal && !mCurrentStrictDecal && mCurrentDepthTest) {
         // The RDP draws a decal only where the depth buffer already holds a surface close
@@ -1549,7 +1589,7 @@ void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size
         glPolygonOffset(-mDecalSlopeBias, 2);
         glStencilFunc(GL_ALWAYS, decalBit, decalBit);
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-        glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+        glDrawArrays(GL_TRIANGLES, drawFirst, 3 * buf_vbo_num_tris);
 
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glDepthMask(mLastDepthMask ? GL_TRUE : GL_FALSE);
@@ -1557,13 +1597,13 @@ void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size
         glPolygonOffset(mDecalSlopeBias, -2);
         glStencilFunc(GL_EQUAL, decalBit, decalBit);
         glStencilOp(GL_KEEP, GL_ZERO, GL_ZERO);
-        glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+        glDrawArrays(GL_TRIANGLES, drawFirst, 3 * buf_vbo_num_tris);
 
         glStencilMask(0xFF);
         glDisable(GL_STENCIL_TEST);
         return;
     }
-    glDrawArrays(GL_TRIANGLES, 0, 3 * buf_vbo_num_tris);
+    glDrawArrays(GL_TRIANGLES, drawFirst, 3 * buf_vbo_num_tris);
 }
 
 void GfxRenderingAPIOGL::Init() {

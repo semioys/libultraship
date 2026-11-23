@@ -5817,6 +5817,19 @@ int Interpreter::RunPostPasses() {
             }
         }
     }
+#ifdef __SWITCH__
+    {
+        // Log whenever the effective post chain changes (count, or fb rendering).
+        static int sLastCount = -1;
+        static bool sLastFb = false;
+        if ((int)passes.size() != sLastCount || mRendersToFb != sLastFb) {
+            sLastCount = (int)passes.size();
+            sLastFb = mRendersToFb;
+            Ship::Switch::Diag("post chain: %d active pass(es), renders to fb: %s", sLastCount,
+                               mRendersToFb ? "yes" : "no");
+        }
+    }
+#endif
     if (passes.empty() || !mRendersToFb) {
         return -1;
     }

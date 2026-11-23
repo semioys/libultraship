@@ -86,7 +86,7 @@ void SetHighFrameRateTarget(bool high);
 
 // Spike profiler: costs accumulated during the current frame. When a frame
 // takes far longer than the target, OnFrame() logs the breakdown.
-enum class FrameCost { Render, Texture, Shader, Resource, GpuSync, Present, Count };
+enum class FrameCost { Render, Texture, Shader, Resource, GpuSync, Present, GameWait, Count };
 void AddFrameCost(FrameCost kind, uint64_t ns);
 
 // Times a scope into the spike profiler.
