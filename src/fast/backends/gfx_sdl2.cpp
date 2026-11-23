@@ -934,10 +934,15 @@ void GfxWindowBackendSDL2::SwapBuffersBegin() {
     }
 
     SyncFramerateWithTime();
-    SDL_GL_SwapWindow(mWnd);
 #ifdef __SWITCH__
+    {
+        Ship::Switch::ScopedFrameCost presentCost(Ship::Switch::FrameCost::Present);
+        SDL_GL_SwapWindow(mWnd);
+    }
     // Once per presented frame (HandleEvents runs more often than that).
     Ship::Switch::OnFrame();
+#else
+    SDL_GL_SwapWindow(mWnd);
 #endif
 }
 

@@ -6841,7 +6841,12 @@ bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
     height = C1(16, 16);
 
     gfx->Flush();
-    gfx->mRapi->ReadFramebufferToCPU(fbId, width, height, rgba16Buffer);
+    {
+    #ifdef __SWITCH__
+        Ship::Switch::ScopedFrameCost gpuSyncCost(Ship::Switch::FrameCost::GpuSync);
+    #endif
+        gfx->mRapi->ReadFramebufferToCPU(fbId, width, height, rgba16Buffer);
+    }
 
 #ifndef IS_BIGENDIAN
     // byteswap the output to BE
@@ -8155,7 +8160,12 @@ void Interpreter::CopyFrameBuffer(int fb_dst_id, int fb_src_id, bool copyOnce, b
     dstX1 = mCurDimensions.width;
     dstY1 = mCurDimensions.height;
 
-    mRapi->CopyFramebuffer(fb_dst_id, fb_src_id, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+    {
+    #ifdef __SWITCH__
+        Ship::Switch::ScopedFrameCost gpuSyncCost(Ship::Switch::FrameCost::GpuSync);
+    #endif
+        mRapi->CopyFramebuffer(fb_dst_id, fb_src_id, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+    }
 
     // Set the copied pointer if we have one
     if (hasCopiedPtr != nullptr) {
@@ -8192,6 +8202,9 @@ uint16_t Interpreter::GetPixelDepth(float x, float y) {
 
     mGetPixelDepthPending.emplace(x, y);
 
+#ifdef __SWITCH__
+    Ship::Switch::ScopedFrameCost gpuSyncCost(Ship::Switch::FrameCost::GpuSync);
+#endif
     std::unordered_map<std::pair<float, float>, uint16_t, hash_pair_ff> res =
         mRapi->GetPixelDepth(mRendersToFb ? mGameFb : 0, mGetPixelDepthPending);
     mGetPixelDepthCached.merge(res);
