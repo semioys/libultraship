@@ -69,6 +69,21 @@ void ShowControllerApplet();
 // priority (0x2C is the main thread's; higher numbers run less eagerly).
 void PinCurrentThread(int core, int priority);
 
+// Graphics recovery: request a texture/palette cache reset (from the menu, or
+// automatically when the GL driver reports GL_OUT_OF_MEMORY). The renderer
+// consumes the request at the start of its next frame.
+void RequestGraphicsReset(const char* reason);
+bool ConsumeGraphicsReset();
+
+// Heap usage from mallinfo(): bytes allocated and bytes free inside the heap.
+void GetHeapStats(uint64_t* inUse, uint64_t* freeBytes);
+
+// Adaptive frame rate: true while recent frames could not keep a 60 FPS
+// target and the game should hold 30 FPS for a while (see OnFrame()).
+bool ShouldHoldThirtyFps();
+// Tells the tracker whether the game is currently aiming for more than 30 FPS.
+void SetHighFrameRateTarget(bool high);
+
 // Call once per presented frame. Every 5 s logs average FPS, the worst frame
 // and the number of hitches (frames over 50 ms) through Diag().
 void OnFrame();

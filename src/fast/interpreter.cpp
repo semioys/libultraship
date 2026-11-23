@@ -7895,6 +7895,37 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
                       const std::unordered_map<Gfx*, Gfx*>& dl_replacements) {
     SpReset();
 
+#ifdef __SWITCH__
+    // Rebuild textures and palettes from scratch when asked (menu button, or
+    // the GL driver ran out of memory). Same effect as restarting the game.
+    if (Ship::Switch::ConsumeGraphicsReset()) {
+        const size_t textures = mTextureCache.map.size();
+        const size_t bytes = mTextureCache.resident_bytes;
+        TextureCacheClear();
+        mPaletteSlotByHash.clear();
+        for (size_t i = 0; i < PALETTE_RING_SIZE; i++) {
+            mPaletteRingHash[i] = 0;
+            mPaletteRingFrameUsed[i] = 0;
+        }
+        mRdp->palette_texture_dirty = true;
+        Ship::Switch::Diag("graphics caches reset: dropped %zu textures (%zu MB)", textures, bytes >> 20);
+    }
+    {
+        static auto sNextReport = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= sNextReport) {
+            sNextReport = now + std::chrono::seconds(30);
+            uint64_t heapUsed = 0;
+            uint64_t heapFree = 0;
+            Ship::Switch::GetHeapStats(&heapUsed, &heapFree);
+            Ship::Switch::Diag("gfx: %zu textures, %zu MB cached (budget %zu MB), heap %lu MB used / %lu MB free",
+                               mTextureCache.map.size(), mTextureCache.resident_bytes >> 20,
+                               mTextureCacheMaxBytes >> 20, (unsigned long)(heapUsed >> 20),
+                               (unsigned long)(heapFree >> 20));
+        }
+    }
+#endif
+
     // Cache the RGB-dither toggle once per frame; the per-draw uniform block reads
     // mRgbDitherEnabled (hot path, so no CVar lookup there).
     mRgbDitherEnabled = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(

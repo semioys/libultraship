@@ -1584,6 +1584,25 @@ void GfxRenderingAPIOGL::StartFrame() {
 
 void GfxRenderingAPIOGL::EndFrame() {
     glFlush();
+#ifdef __SWITCH__
+    // Texture uploads that fail for lack of GPU memory do so silently: sprites
+    // vanish and palettes go stale until the textures are uploaded again.
+    // Watch for it and have the renderer drop and rebuild its caches.
+    for (int i = 0; i < 8; i++) {
+        const GLenum error = glGetError();
+        if (error == GL_NO_ERROR) {
+            break;
+        }
+        static int sReported = 0;
+        if (sReported < 20) {
+            sReported++;
+            Ship::Switch::Diag("GL error 0x%04x at end of frame", error);
+        }
+        if (error == GL_OUT_OF_MEMORY) {
+            Ship::Switch::RequestGraphicsReset("GL_OUT_OF_MEMORY");
+        }
+    }
+#endif
 }
 
 void GfxRenderingAPIOGL::FinishRender() {

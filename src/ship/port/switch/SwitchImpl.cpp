@@ -6,6 +6,7 @@
 #include <malloc.h>
 #include <cerrno>
 #include <cstdarg>
+#include <cstring>
 #include <cstdio>
 #include <arpa/inet.h>
 #include <sys/stat.h>
@@ -215,6 +216,83 @@ void GetDisplaySize(int* width, int* height) {
     }
 }
 
+// ---- Graphics recovery -----------------------------------------------------
+static std::atomic<bool> sGraphicsResetRequested { false };
+
+void RequestGraphicsReset(const char* reason) {
+    if (!sGraphicsResetRequested.exchange(true)) {
+        Diag("graphics reset requested: %s", reason != nullptr ? reason : "?");
+    }
+}
+
+bool ConsumeGraphicsReset() {
+    return sGraphicsResetRequested.exchange(false);
+}
+
+void GetHeapStats(uint64_t* inUse, uint64_t* freeBytes) {
+    const struct mallinfo info = mallinfo();
+    *inUse = info.uordblks;
+    *freeBytes = info.fordblks;
+}
+
+// ---- Adaptive frame rate ----------------------------------------------------
+// While the game targets 60 FPS, watch a sliding window of frame times. When
+// too many frames miss the 60 FPS budget, hold 30 FPS (steady instead of
+// stuttering between 40 and 60) and try 60 again later, waiting longer each
+// time a heavy scene keeps failing.
+static bool sHighTarget = false;
+static bool sHolding = false;
+static u64 sHoldUntilNs = 0;
+static u64 sHoldLengthNs = 4000000000ULL;
+static u64 sLastReleaseNs = 0;
+static uint8_t sSlowRing[60];
+static int sSlowRingPos = 0;
+static int sSlowCount = 0;
+
+void SetHighFrameRateTarget(bool high) {
+    sHighTarget = high;
+    if (!high) {
+        sHolding = false;
+    }
+}
+
+bool ShouldHoldThirtyFps() {
+    return sHolding;
+}
+
+static void TrackAdaptiveFps(u64 now, u64 frameNs) {
+    if (!sHighTarget) {
+        return;
+    }
+    if (sHolding) {
+        if (now >= sHoldUntilNs) {
+            sHolding = false;
+            sLastReleaseNs = now;
+            memset(sSlowRing, 0, sizeof(sSlowRing));
+            sSlowCount = 0;
+            Diag("adaptive fps: trying 60 again");
+        }
+        return;
+    }
+    // Missed the 60 FPS budget by a clear margin (vsync jitter is ~1 ms).
+    const uint8_t slow = frameNs > 19000000ULL ? 1 : 0;
+    sSlowCount += slow - sSlowRing[sSlowRingPos];
+    sSlowRing[sSlowRingPos] = slow;
+    sSlowRingPos = (sSlowRingPos + 1) % (int)sizeof(sSlowRing);
+    if (sSlowCount >= 12) { // a fifth of the last second
+        // Failing again right after a release: back off longer (up to 60 s).
+        if (sLastReleaseNs != 0 && now - sLastReleaseNs < 3000000000ULL) {
+            sHoldLengthNs = sHoldLengthNs * 2 > 60000000000ULL ? 60000000000ULL : sHoldLengthNs * 2;
+        } else {
+            sHoldLengthNs = 4000000000ULL;
+        }
+        sHolding = true;
+        sHoldUntilNs = now + sHoldLengthNs;
+        Diag("adaptive fps: holding 30 FPS for %.0f s (%d slow frames in the last 60)", sHoldLengthNs / 1e9,
+             sSlowCount);
+    }
+}
+
 void OnFrame() {
     static u64 sWindowStart = 0;
     static u64 sLastFrame = 0;
@@ -229,6 +307,7 @@ void OnFrame() {
     const u64 now = armTicksToNs(armGetSystemTick());
     if (sLastFrame != 0) {
         const u64 frameNs = now - sLastFrame;
+        TrackAdaptiveFps(now, frameNs);
         sWorstNs = frameNs > sWorstNs ? frameNs : sWorstNs;
         if (frameNs > 50000000ULL) {
             sHitches++;
